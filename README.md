@@ -1,6 +1,6 @@
 # Video Editor
 
-Web app dựng video mà cả người và AI agent cùng sửa trên một timeline. Hiện đang ở Phase 0: lõi dữ liệu và xử lý video, chưa có UI và MCP.
+Web app dựng video mà cả người và AI agent cùng sửa trên một timeline. Hiện đã có lõi xử lý video và MCP server cho agent, chưa có UI.
 
 Yêu cầu: Node 22.18 trở lên, `ffmpeg` và `ffprobe` trên PATH.
 
@@ -11,6 +11,32 @@ npm install
 ```bash
 npm test
 ```
+
+## Kết nối AI agent qua MCP
+
+```bash
+npm run mcp
+```
+
+Server in ra lệnh `claude mcp add ...` kèm token để chạy một lần. Sau đó, trong Claude Code, bạn chỉ cần yêu cầu bằng lời, ví dụ "import video này, bỏ đoạn đầu rồi export".
+
+Server chỉ nghe trên `127.0.0.1`, yêu cầu token, và từ chối Host hoặc Origin lạ. Token nằm trong `projects/.mcp-token`.
+
+| Biến môi trường | Mặc định | Ý nghĩa |
+|---|---|---|
+| `VE_PROJECTS_DIR` | `projects` | Nơi lưu project |
+| `VE_MCP_PORT` | `8765` | Cổng của server |
+| `VE_MEDIA_DIRS` | `~/Movies:~/Downloads:~/Desktop:~/Pictures` | Thư mục được phép import video |
+| `VE_MCP_TOKEN` | Tự tạo | Token cố định, nếu muốn tự đặt |
+
+File xuất nằm trong `<project>/exports/`, bản xem trước nằm trong `<project>/previews/`.
+
+Công cụ cho agent:
+
+- **Đọc:** `list_projects`, `get_timeline`, `get_asset_info`, `get_history`
+- **Nhìn:** `get_frame`, `get_filmstrip`
+- **Sửa:** `create_project`, `import_asset`, `add_clip`, `split_clip`, `trim_clip`, `move_clip`, `delete_clip`, `set_volume`, `apply_batch`, `undo`, `redo`
+- **Xuất:** `render_preview`, `export_video`, `get_job_status`
 
 ## Thử bằng dòng lệnh
 

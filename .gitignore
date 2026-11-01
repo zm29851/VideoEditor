@@ -1,3 +1,8 @@
 node_modules/
 projects/
 *.log
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.m4v

@@ -1,9 +1,39 @@
 import type { Asset, Clip, Project } from "../schema.ts";
 import { AUDIO_SAMPLE_RATE, fpsToFilterString, frameToSample, framesToSeconds } from "../time.ts";
-import { ffmpeg } from "./ffmpeg.ts";
+import { ffmpeg, ffmpegWithProgress } from "./ffmpeg.ts";
 
 export interface ExportOptions {
   encoder?: "libx264" | "h264_videotoolbox";
+  /** Fast and small, for checking an edit rather than delivering it. */
+  draft?: boolean;
+}
+
+const PREVIEW_LONG_EDGE = 640;
+
+export function timelineDuration(project: Project): number {
+  return project.timeline.tracks
+    .flatMap((track) => track.clips)
+    .reduce((end, clip) => Math.max(end, clip.start + clip.duration), 0);
+}
+
+/** A copy of the project holding frames start..end of the timeline, rendered from the proxies. */
+export function buildPreviewProject(project: Project, start: number, end: number): Project {
+  const preview = structuredClone(project);
+  for (const asset of preview.assets) asset.masterPath = asset.proxyPath;
+
+  const scale = PREVIEW_LONG_EDGE / Math.max(project.width, project.height);
+  preview.width = Math.round((project.width * scale) / 2) * 2;
+  preview.height = Math.round((project.height * scale) / 2) * 2;
+
+  for (const track of preview.timeline.tracks) {
+    track.clips = track.clips.flatMap((clip) => {
+      const from = Math.max(clip.start, start);
+      const to = Math.min(clip.start + clip.duration, end);
+      if (from >= to) return [];
+      return [{ ...clip, start: from - start, sourceIn: clip.sourceIn + from - clip.start, duration: to - from }];
+    });
+  }
+  return preview;
 }
 
 export interface Segment {
@@ -87,8 +117,9 @@ export function buildExportArgs(project: Project, output: string, options: Expor
   filters.push(`${concatPads.join("")}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
 
   const encoder = options.encoder ?? "libx264";
-  const videoArgs =
-    encoder === "libx264"
+  const videoArgs = options.draft
+    ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
+    : encoder === "libx264"
       ? ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
       : ["-c:v", "h264_videotoolbox", "-b:v", "12M"];
 
@@ -121,6 +152,13 @@ export function buildExportArgs(project: Project, output: string, options: Expor
   ];
 }
 
-export async function exportProject(project: Project, output: string, options?: ExportOptions): Promise<void> {
-  await ffmpeg(buildExportArgs(project, output, options));
+export async function exportProject(
+  project: Project,
+  output: string,
+  options?: ExportOptions,
+  onFrame?: (frame: number) => void,
+): Promise<void> {
+  const args = buildExportArgs(project, output, options);
+  if (onFrame) await ffmpegWithProgress(args, onFrame);
+  else await ffmpeg(args);
 }
