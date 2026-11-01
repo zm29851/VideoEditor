@@ -73,6 +73,15 @@ export class CommandEngine {
     return structuredClone(this.#history);
   }
 
+  /** What undo would revert, or undefined when there is nothing to undo. */
+  get undoLabel(): string | undefined {
+    return this.#undoStack().at(-1)?.label;
+  }
+
+  get redoLabel(): string | undefined {
+    return this.#redoStack().at(-1)?.label;
+  }
+
   /** Runs every command or none of them, as one undo step. */
   applyBatch(request: BatchRequest): BatchResult {
     this.#assertRevision(request.baseRevision);

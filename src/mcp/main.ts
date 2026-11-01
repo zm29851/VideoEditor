@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadOrCreateToken, startMcpHttpServer } from "./http.ts";
 import { Workspace, defaultMediaDirs } from "./workspace.ts";
 
@@ -8,8 +9,10 @@ const mediaDirs = process.env.VE_MEDIA_DIRS?.split(":").filter(Boolean) ?? defau
 
 const workspace = new Workspace(root, mediaDirs);
 const token = process.env.VE_MCP_TOKEN ?? loadOrCreateToken(workspace.root);
-const { url } = await startMcpHttpServer(workspace, token, port);
+const webRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "dist");
+const { url } = await startMcpHttpServer(workspace, token, port, { webRoot });
 
+console.log(`Mở giao diện dựng video:\n\nhttp://127.0.0.1:${port}/?token=${token}\n`);
 console.log(`Video Editor MCP đang chạy tại ${url}`);
 console.log(`Project: ${workspace.root}`);
 console.log(`Thư mục video được phép: ${workspace.mediaDirs.join(", ")}`);

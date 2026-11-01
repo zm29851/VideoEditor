@@ -6,6 +6,8 @@ export interface Job {
   id: string;
   type: string;
   projectId: string;
+  /** What the job works on, in words a person can read, such as a file name. */
+  label?: string;
   status: JobStatus;
   /** 0 to 100 when the work can measure itself. */
   progress?: number;
@@ -29,11 +31,12 @@ export class JobQueue {
   #tail: Promise<void> = Promise.resolve();
   #waiters = new Map<string, Array<() => void>>();
 
-  enqueue(type: string, projectId: string, work: (context: JobContext) => Promise<unknown>): Job {
+  enqueue(type: string, projectId: string, work: (context: JobContext) => Promise<unknown>, label?: string): Job {
     const job: Job = {
       id: `job_${randomUUID().slice(0, 8)}`,
       type,
       projectId,
+      ...(label === undefined ? {} : { label }),
       status: "queued",
       createdAt: new Date().toISOString(),
     };
@@ -46,6 +49,10 @@ export class JobQueue {
   get(id: string): Job | undefined {
     const job = this.#jobs.get(id);
     return job && { ...job };
+  }
+
+  listForProject(projectId: string): Job[] {
+    return [...this.#jobs.values()].filter((job) => job.projectId === projectId).map((job) => ({ ...job }));
   }
 
   /** Resolves when the job finishes or the wait runs out, whichever comes first. */

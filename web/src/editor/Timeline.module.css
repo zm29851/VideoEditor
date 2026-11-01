@@ -1,0 +1,245 @@
+.timeline {
+  grid-area: timeline;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--color-bg-panel);
+  border-top: 1px solid var(--color-border);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+}
+
+.grow {
+  flex-grow: 1;
+}
+
+.zoomSlider {
+  width: 140px;
+  margin: 0 var(--space-2);
+}
+
+.body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.labels {
+  flex: 0 0 var(--size-track-label);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.labelRuler {
+  height: var(--size-ruler);
+}
+
+.labelVideo,
+.labelAudio {
+  display: flex;
+  align-items: center;
+  padding-left: var(--space-4);
+}
+
+.labelVideo {
+  height: var(--size-track);
+}
+
+.labelAudio {
+  height: var(--size-track-audio);
+  margin-top: var(--space-1);
+}
+
+.scroller {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.content {
+  position: relative;
+  width: calc(var(--content-frames) * var(--px-per-frame) * 1px);
+  min-width: 100%;
+  height: 100%;
+}
+
+.ruler {
+  position: relative;
+  height: var(--size-ruler);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+
+.tick {
+  position: absolute;
+  left: calc(var(--tick-frame) * var(--px-per-frame) * 1px);
+  top: 0;
+  bottom: 0;
+  padding-left: var(--space-1);
+  border-left: 1px solid var(--color-border-strong);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.tracks {
+  position: relative;
+  height: calc(100% - var(--size-ruler));
+  touch-action: none;
+}
+
+.trackVideo,
+.trackAudio {
+  position: relative;
+  background: var(--color-bg-app);
+}
+
+.trackVideo {
+  height: var(--size-track);
+}
+
+.trackAudio {
+  height: var(--size-track-audio);
+  margin-top: var(--space-1);
+}
+
+.clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--clip-start) * var(--px-per-frame) * 1px);
+  width: calc(var(--clip-duration) * var(--px-per-frame) * 1px);
+  min-width: 2px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.clip:active {
+  cursor: grabbing;
+}
+
+.clipVideo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-clip-video);
+  border: 1px solid var(--color-clip-video-border);
+  text-align: left;
+}
+
+.clipAudio {
+  background: var(--color-clip-audio);
+  border: 1px solid var(--color-clip-audio-border);
+}
+
+.selected {
+  border: 2px solid var(--color-primary);
+}
+
+.clipThumb {
+  flex-shrink: 0;
+  height: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.clipName {
+  overflow: hidden;
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.handleStart,
+.handleEnd {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--size-trim-handle);
+  background: var(--color-clip-video-border);
+  cursor: ew-resize;
+  opacity: 0;
+  z-index: 1;
+}
+
+.handleStart {
+  left: 0;
+}
+
+.handleEnd {
+  right: 0;
+}
+
+.clip:hover .handleStart,
+.clip:hover .handleEnd,
+.selected .handleStart,
+.selected .handleEnd {
+  opacity: 1;
+}
+
+.selected .handleStart,
+.selected .handleEnd {
+  background: var(--color-primary);
+}
+
+.waveform {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.noAudio {
+  display: block;
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--size-track-audio);
+  white-space: nowrap;
+}
+
+.ghost {
+  position: absolute;
+  top: 0;
+  height: calc(var(--size-track) + var(--size-track-audio) + var(--space-1));
+  left: calc(var(--clip-start) * var(--px-per-frame) * 1px);
+  width: calc(var(--clip-duration) * var(--px-per-frame) * 1px);
+  border: 2px dashed var(--color-primary);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+
+.empty {
+  position: absolute;
+  top: var(--space-5);
+  left: var(--space-5);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-playhead);
+  box-shadow: var(--shadow-sm);
+  transform: translateX(calc(var(--playhead-frame, 0) * var(--px-per-frame) * 1px));
+  pointer-events: none;
+  z-index: 2;
+}

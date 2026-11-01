@@ -59,6 +59,12 @@ Tất cả biến nằm trong một file duy nhất, `tokens.css`. Giao diện d
 
   /* Trạng thái */
   --color-success: #7fcba4;
+  --color-danger: #ff9d9d;
+  --color-danger-surface: #2c1a1c;
+
+  /* Lớp phủ và nền video */
+  --color-overlay: rgb(0 0 0 / 0.6);
+  --color-preview-bg: #000000;
 
   /* Timeline */
   --color-clip-video: #2a3a4d;
@@ -99,6 +105,22 @@ Tất cả biến nằm trong một file duy nhất, `tokens.css`. Giao diện d
   --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
+
+  /* Kích thước bố cục */
+  --size-control-sm: 28px;
+  --size-control: 36px;
+  --size-control-lg: 44px;
+  --size-header: 56px;
+  --size-panel-left: 280px;
+  --size-panel-right: 300px;
+  --size-timeline: 300px;
+  --size-ruler: 28px;
+  --size-track: 56px;
+  --size-track-audio: 40px;
+  --size-track-label: 72px;
+  --size-trim-handle: 8px;
+  --size-thumb-width: 72px;
+  --size-thumb-height: 44px;
 }
 ```
 
@@ -108,7 +130,7 @@ Cần giá trị mới thì thêm biến vào `tokens.css`, không viết trực
 
 - Dùng duy nhất Be Vietnam Pro, ở ba độ đậm 400, 500 và 600.
 - Cỡ chữ tối thiểu là 12px. Nội dung chính dùng 14px.
-- Timecode và các con số thay đổi liên tục dùng `font-variant-numeric: tabular-nums` để chữ không bị nhảy. Phải kiểm tra font thực sự hỗ trợ tính năng này khi triển khai.
+- Be Vietnam Pro **không có** `tabular-nums`: đã đo trên trình duyệt, số 1 rộng 0,39em còn số 4 rộng 0,71em dù bật tính năng này. Vì vậy timecode và các con số thay đổi liên tục dùng component `Digits`, đặt mỗi chữ số vào một ô rộng cố định để chữ không bị nhảy.
 - Toàn bộ nội dung giao diện viết bằng tiếng Việt, câu ngắn, dùng đúng thuật ngữ đã thống nhất ở mục 6.
 
 ## 4. Không gian thở
@@ -164,28 +186,38 @@ Cần giá trị mới thì thêm biến vào `tokens.css`, không viết trực
 | Xuất video | Export |
 | Bám điểm cắt | Snap |
 | Hoạt động | Lịch sử thay đổi |
+| Xóa và dồn | Xóa clip rồi kéo các clip phía sau lên |
 
 ## 7. Thư viện component
 
 Danh sách này được chốt khi bắt đầu Phase 2. Bất kỳ thư viện nào được chọn đều phải tùy biến được bằng CSS và biến ở mục 2, để không trái mục 1.
 
-| Nhu cầu | Thư viện đề xuất | Trạng thái |
+| Nhu cầu | Thư viện | Trạng thái |
 |---|---|---|
-| Tab, dialog, menu, slider, tooltip, select | Radix UI Primitives | Chờ chốt |
-| Biểu tượng | Lucide | Chờ chốt |
-| Font | `@fontsource` cho Be Vietnam Pro, để chạy được khi không có mạng | Chờ chốt |
-| Style | CSS Modules kèm `tokens.css` | Chờ chốt |
-| Waveform | Đánh giá wavesurfer.js trước khi tự vẽ | Chờ đánh giá |
-| Timeline | Đánh giá thư viện public trước khi tự viết | Chờ đánh giá |
+| Dialog, slider, tooltip, toast, progress | Radix UI Primitives (`radix-ui`) | Đã chốt |
+| Biểu tượng | `lucide-react` | Đã chốt |
+| Font | `@fontsource/be-vietnam-pro`, chạy được khi không có mạng | Đã chốt |
+| Style | CSS Modules kèm `tokens.css` | Đã chốt |
+| Waveform | `wavesurfer.js`, vẽ từ peaks do server tính | Đã chốt |
+| Timeline | Tự viết, xem bên dưới | Đã chốt |
 
 ### Component tự viết
 
-Chưa có. Khi thêm, ghi tên component, các thư viện đã xem xét và lý do không dùng được.
+**Timeline** (`web/src/editor/Timeline.tsx`). Đã xem xét `@xzdarcy/react-timeline-editor`. Không dùng được vì:
+
+- Mọi vị trí là giây dạng số thực, trong khi dự án yêu cầu số nguyên frame.
+- Clip không nhận focus, mã nguồn không có `tabIndex`, `aria-*` hay xử lý phím, trái mục 8.
+- Mỗi action chỉ thuộc một hàng, nên không biểu diễn được một clip có cả hàng hình và hàng tiếng đi cùng nhau.
+
+Timeline tự viết dùng Pointer Events và biến CSS, phần tính toán nằm riêng trong `timelineOps.ts` để có unit test.
+
+**Preview** (`web/src/editor/player.ts`). Player public như Video.js phát một nguồn. Dự án cần phát nhiều clip nối nhau theo đúng frame của timeline, nên dùng hai thẻ `<video>` thay phiên, thẻ chờ được seek sẵn tới clip kế tiếp.
 
 ## 8. Accessibility
 
 - Dùng thẻ đúng ngữ nghĩa, như `<button>` và `<label>`. Nút chỉ có biểu tượng phải có `aria-label`.
 - Mọi thao tác dùng được bằng bàn phím, và có viền focus rõ ràng.
+- Thao tác kéo thả trên timeline phải có phím tắt thay thế.
 - Tương phản chữ tối thiểu 4.5:1, kể cả chữ 12px màu phụ.
 - Hai màu cần phân biệt phải khác nhau cả về độ sáng, không chỉ khác sắc độ.
 

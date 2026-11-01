@@ -1,5 +1,6 @@
 node_modules/
 projects/
+web/dist/
 *.log
 *.mov
 *.MOV

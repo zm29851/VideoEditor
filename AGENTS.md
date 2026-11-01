@@ -37,7 +37,8 @@ App không sửa trực tiếp file video. Timeline là JSON, và video chỉ đ
 | Agent | MCP Streamable HTTP tại `/mcp`, stateless |
 | Xử lý video | FFmpeg và ffprobe trên PATH, gọi bằng danh sách tham số, không qua shell |
 | Test | Vitest, với FFmpeg thật |
-| Dự kiến cho Phase 2 | React, Vite, REST và WebSocket |
+| Giao diện | React, Vite, Radix UI, CSS Modules, gọi REST tại `/api` |
+| Dự kiến cho Phase 3 | WebSocket. Hiện UI hỏi trạng thái định kỳ để thấy tiến độ job và thay đổi của agent |
 | Dự kiến cho Phase 4 | whisper.cpp, model `base` hoặc `small` |
 
 ## Cấu trúc thư mục
@@ -57,7 +58,18 @@ src/media/export.ts    Export và preview
 src/media/frames.ts    Trích frame và filmstrip
 src/mcp/tools.ts       Công cụ MCP
 src/mcp/http.ts        HTTP server, token, kiểm tra Host và Origin
-src/mcp/workspace.ts   Danh sách project, giới hạn thư mục import
+src/media/peaks.ts     Độ lớn âm thanh theo từng frame, cho waveform
+src/mcp/workspace.ts   Danh sách project, giới hạn thư mục import, khởi động job
+src/api/routes.ts      REST API cho giao diện, dùng chung CommandEngine với MCP
+src/api/static.ts      Gửi file có hỗ trợ Range, phục vụ giao diện đã build
+web/src/App.tsx        Điều hướng giữa danh sách project và màn hình dựng
+web/src/api.ts         Gọi REST API
+web/src/projects/      Danh sách project, tạo project
+web/src/editor/        Màn hình dựng: Editor, Library, Preview, Timeline, Properties, ExportDialog, Shortcuts
+web/src/editor/player.ts       Phát timeline trên hai thẻ video
+web/src/editor/timelineOps.ts  Tính toán di chuyển, trim, bám điểm cắt, có unit test
+web/src/ui/            Component dùng chung, bọc Radix
+web/src/styles/        tokens.css và style nền
 scripts/benchmark.ts   Đo hiệu năng trên video thật
 test/                  Unit test và test tích hợp
 ```
@@ -86,7 +98,15 @@ npm run typecheck
 ```
 
 ```bash
+npm start
+```
+
+```bash
 npm run mcp
+```
+
+```bash
+npm run web:dev
 ```
 
 ```bash
@@ -128,13 +148,17 @@ Thông tin xoay được FFmpeg áp dụng khi giải mã. Proxy phải có đú
 ## Bảo mật
 
 - Server chỉ nghe trên `127.0.0.1`, yêu cầu token Bearer, từ chối Host và Origin lạ.
-- Chỉ import được file có đuôi video trong các thư mục cho phép, sau khi đã giải symlink.
+- Chỉ import được file có đuôi video, sau khi đã giải symlink. Mặc định cho phép toàn bộ máy, kể cả với agent có token. `VE_MEDIA_DIRS` giới hạn lại khi cần.
 - Tên project và tên file xuất được kiểm tra. File xuất luôn nằm trong thư mục của project.
 - Token lưu ở `projects/.mcp-token` với quyền `600`.
+- Trình duyệt đăng nhập qua `/?token=...`, server chuyển token vào cookie `HttpOnly`, `SameSite=Strict` rồi xóa khỏi địa chỉ. Thẻ video không gửi được header nên cần cookie. `/api` nhận Bearer hoặc cookie, `/mcp` chỉ nhận Bearer.
+- File tĩnh của giao diện không cần token vì không chứa dữ liệu người dùng, và có Content-Security-Policy.
 
 ## Môi trường và hiệu năng
 
 Máy phát triển là Mac Intel i5-8279U, 8 GB RAM. Khi cài công cụ, ưu tiên bản binary dựng sẵn cho `darwin-amd64`.
+
+Preview dùng thẻ video trên proxy: chỉ thẳng tới giữa frame khi seek để không lệch do làm tròn, và chuyển clip sớm khoảng 8 ms để frame sau điểm cắt không hiện ra. Âm lượng đi qua Web Audio vì thẻ video không phát to hơn 100%.
 
 Bản FFmpeg đang dùng **không có** `drawtext` và `zscale`. Vì vậy test đọc số frame qua barcode, còn HDR dùng LUT.
 
@@ -153,7 +177,7 @@ Cài đặt iPhone khuyến nghị: 1080p 30 fps, tắt HDR, tắt FPS tự đ�
 
 | Rủi ro | Cách xử lý |
 |---|---|
-| Preview khác bản export | Hiệu ứng phải làm được ở cả hai bên, có test so frame giữa preview và export |
+| Preview khác bản export | Hiệu ứng phải làm được ở cả hai bên, có test so frame giữa preview và export. Ngay sau điểm cắt, preview có thể bỏ qua 1 đến 2 frame hiển thị, bản export không bị |
 | Máy yếu | Dùng proxy, chạy lần lượt từng job nặng |
 | Agent sửa sai | Không sửa file gốc, undo theo lô, xem trước khi export |
 | Màu HDR | Mới xem một frame từ iPhone thật, chưa so trực tiếp với bản gốc |
@@ -194,19 +218,19 @@ Trạng thái: `[x]` đã xong và đã kiểm chứng, `[ ]` chưa làm.
 
 ### Phase 2: Giao diện cơ bản
 
-- [ ] Khởi tạo React, Vite, design tokens và font theo DESIGN.md
-- [ ] Chọn thư viện component public và ghi vào DESIGN.md
-- [ ] REST API dùng chung CommandEngine với MCP
-- [ ] Danh sách project và tạo project mới
-- [ ] Thư viện media, import có tiến độ
-- [ ] Preview từ proxy, phát/dừng, bước từng frame, timecode
-- [ ] Timeline: thước thời gian, playhead, track video và âm thanh
-- [ ] Thao tác: kéo thả, trim, cắt, xóa, bám điểm cắt, zoom
-- [ ] Panel thuộc tính của clip
-- [ ] Phím tắt, undo/redo
-- [ ] Hộp thoại xuất video có tiến độ
-- [ ] Kiểm tra độ lệch giữa preview và export
-- [ ] Người dùng tự dựng được một video hoàn chỉnh trên web
+- [x] Khởi tạo React, Vite, design tokens và font theo DESIGN.md
+- [x] Chọn thư viện component public và ghi vào DESIGN.md
+- [x] REST API dùng chung CommandEngine với MCP
+- [x] Danh sách project và tạo project mới
+- [x] Thư viện media, import có tiến độ
+- [x] Preview từ proxy, phát/dừng, bước từng frame, timecode
+- [x] Timeline: thước thời gian, playhead, track video và âm thanh
+- [x] Thao tác: kéo thả, trim, cắt, xóa, bám điểm cắt, zoom
+- [x] Panel thuộc tính của clip
+- [x] Phím tắt, undo/redo
+- [x] Hộp thoại xuất video có tiến độ
+- [x] Kiểm tra độ lệch giữa preview và export
+- [x] Người dùng tự dựng được một video hoàn chỉnh trên web
 
 ### Phase 3: Cộng tác người và agent
 

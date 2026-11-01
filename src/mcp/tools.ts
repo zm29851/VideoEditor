@@ -1,11 +1,8 @@
-import { mkdirSync, existsSync } from "node:fs";
-import { extname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Actor, Command, CommandInput, FrameRate, Project } from "../schema.ts";
-import { buildPreviewProject, exportProject, timelineDuration } from "../media/export.ts";
+import { timelineDuration } from "../media/export.ts";
 import { extractFilmstrip, extractFrame, type FrameSource } from "../media/frames.ts";
-import { importVideo } from "../media/import.ts";
 import { frameToTimecode, secondsToFrame } from "../time.ts";
 import type { Workspace } from "./workspace.ts";
 
@@ -142,17 +139,6 @@ function guarded<A>(handler: (args: A) => Promise<ToolResult> | ToolResult) {
       return { content: [{ type: "text", text: message }], isError: true };
     }
   };
-}
-
-function uniquePath(directory: string, name: string): string {
-  mkdirSync(directory, { recursive: true });
-  const extension = extname(name);
-  const stem = name.slice(0, name.length - extension.length);
-  let candidate = join(directory, name);
-  for (let suffix = 2; existsSync(candidate); suffix++) {
-    candidate = join(directory, `${stem}-${suffix}${extension}`);
-  }
-  return candidate;
 }
 
 const ProjectId = z.string().describe("Project name from list_projects or create_project.");
@@ -306,18 +292,7 @@ export function createMcpServer(workspace: Workspace): McpServer {
         "Import a video by absolute path from an allowed folder. Runs as a job: conversion and the proxy can take a while. The asset appears in the project when the job succeeds, which also raises the revision.",
       inputSchema: { projectId: ProjectId, path: z.string() },
     },
-    guarded(({ projectId, path }) => {
-      const source = workspace.resolveMediaPath(path);
-      const engine = workspace.engine(projectId);
-      return json(
-        workspace.jobs.enqueue("import", projectId, async ({ setStage }) => {
-          setStage("Đang chuẩn hóa và tạo proxy");
-          const { asset, timings } = await importVideo(workspace.projectRoot(projectId), source, engine.project.fps);
-          engine.registerAsset(asset);
-          return { asset, timings, revision: engine.project.revision };
-        }),
-      );
-    }),
+    guarded(({ projectId, path }) => json(workspace.startImport(projectId, path))),
   );
 
   server.registerTool(
@@ -419,24 +394,6 @@ export function createMcpServer(workspace: Workspace): McpServer {
     guarded(({ projectId, baseRevision }) => json(workspace.engine(projectId).redo(ACTOR, baseRevision))),
   );
 
-  const startRender = (
-    type: string,
-    projectId: string,
-    project: Project,
-    output: string,
-    options: { draft: boolean },
-    revision: number,
-  ) => {
-    const total = timelineDuration(project);
-    if (total === 0) throw new Error("Timeline đang rỗng, không có gì để xuất.");
-    return json(
-      workspace.jobs.enqueue(type, projectId, async ({ setProgress }) => {
-        await exportProject(project, output, options, (frame) => setProgress((frame / total) * 99));
-        return { path: output, revision, durationFrames: total, durationTimecode: frameToTimecode(total, project.fps) };
-      }),
-    );
-  };
-
   server.registerTool(
     "render_preview",
     {
@@ -451,10 +408,7 @@ export function createMcpServer(workspace: Workspace): McpServer {
       const project = workspace.engine(projectId).project;
       const from = toFrame(start, project.fps);
       const to = end ? toFrame(end, project.fps) : timelineDuration(project);
-      if (from < 0 || to <= from) throw new Error(`Khoảng frame ${from}..${to} không hợp lệ.`);
-      const directory = join(workspace.projectRoot(projectId), "previews");
-      const output = uniquePath(directory, `preview-r${project.revision}-${from}-${to}.mp4`);
-      return startRender("preview", projectId, buildPreviewProject(project, from, to), output, { draft: true }, project.revision);
+      return json(workspace.startPreview(projectId, from, to));
     }),
   );
 
@@ -472,12 +426,7 @@ export function createMcpServer(workspace: Workspace): McpServer {
           .describe("File name without a folder. .mp4 is added."),
       },
     },
-    guarded(({ projectId, name }) => {
-      const project = workspace.engine(projectId).project;
-      const directory = join(workspace.projectRoot(projectId), "exports");
-      const output = uniquePath(directory, `${name.replace(/\.mp4$/i, "")}.mp4`);
-      return startRender("export", projectId, project, output, { draft: false }, project.revision);
-    }),
+    guarded(({ projectId, name }) => json(workspace.startExport(projectId, name))),
   );
 
   server.registerTool(

@@ -1,6 +1,6 @@
 # Video Editor
 
-Web app dựng video mà cả người và AI agent cùng sửa trên một timeline. Hiện đã có lõi xử lý video và MCP server cho agent, chưa có UI.
+Web app dựng video mà cả người và AI agent cùng sửa trên một timeline. Hiện đã có lõi xử lý video, MCP server cho agent và giao diện dựng video trên trình duyệt.
 
 Yêu cầu: Node 22.18 trở lên, `ffmpeg` và `ffprobe` trên PATH.
 
@@ -12,13 +12,21 @@ npm install
 npm test
 ```
 
-## Kết nối AI agent qua MCP
+## Dựng video trên trình duyệt
 
 ```bash
-npm run mcp
+npm start
 ```
 
-Server in ra lệnh `claude mcp add ...` kèm token để chạy một lần. Sau đó, trong Claude Code, bạn chỉ cần yêu cầu bằng lời, ví dụ "import video này, bỏ đoạn đầu rồi export".
+Lệnh này build giao diện rồi chạy server. Mở đường dẫn có `?token=...` mà server in ra. Trình duyệt sẽ giữ token trong cookie nên những lần sau chỉ cần mở `http://127.0.0.1:8765`.
+
+Bấm `?` trong màn hình dựng để xem phím tắt. Video chọn được từ mọi thư mục trên máy, file gốc không bị sao chép hay sửa. Muốn giới hạn thì đặt `VE_MEDIA_DIRS`.
+
+Khi phát triển giao diện, chạy server bằng `npm run mcp` rồi chạy `npm run web:dev` ở terminal khác.
+
+## Kết nối AI agent qua MCP
+
+Chạy `npm start`, hoặc `npm run mcp` nếu giao diện đã được build. Server in ra lệnh `claude mcp add ...` kèm token để chạy một lần. Sau đó, trong Claude Code, bạn chỉ cần yêu cầu bằng lời, ví dụ "import video này, bỏ đoạn đầu rồi export".
 
 Server chỉ nghe trên `127.0.0.1`, yêu cầu token, và từ chối Host hoặc Origin lạ. Token nằm trong `projects/.mcp-token`.
 
@@ -26,7 +34,7 @@ Server chỉ nghe trên `127.0.0.1`, yêu cầu token, và từ chối Host ho�
 |---|---|---|
 | `VE_PROJECTS_DIR` | `projects` | Nơi lưu project |
 | `VE_MCP_PORT` | `8765` | Cổng của server |
-| `VE_MEDIA_DIRS` | `~/Movies:~/Downloads:~/Desktop:~/Pictures` | Thư mục được phép import video |
+| `VE_MEDIA_DIRS` | `/`, tức toàn bộ máy | Thư mục được phép import video, cả với agent |
 | `VE_MCP_TOKEN` | Tự tạo | Token cố định, nếu muốn tự đặt |
 
 File xuất nằm trong `<project>/exports/`, bản xem trước nằm trong `<project>/previews/`.

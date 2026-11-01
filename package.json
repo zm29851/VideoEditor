@@ -9,17 +9,30 @@
   "scripts": {
     "cli": "node src/cli.ts",
     "mcp": "node src/mcp/main.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "test": "vitest run",
-    "benchmark": "node scripts/benchmark.ts"
+    "benchmark": "node scripts/benchmark.ts",
+    "start": "vite build web --logLevel warn && node src/mcp/main.ts",
+    "web:build": "vite build web",
+    "web:dev": "vite web"
   },
   "dependencies": {
+    "@fontsource/be-vietnam-pro": "^5.3.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "lucide-react": "^1.66.0",
+    "radix-ui": "^1.8.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "wavesurfer.js": "^8.0.4",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "typescript": "^5.8.0",
+    "vite": "^7.3.7",
     "vitest": "^3.2.0"
   }
 }

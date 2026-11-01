@@ -1,0 +1,91 @@
+:root {
+  /* Nền */
+  --color-bg-app: #101214;
+  --color-bg-panel: #15171a;
+  --color-bg-raised: #1d2025;
+  --color-bg-control: #20242a;
+
+  /* Viền */
+  --color-border: #2b3036;
+  --color-border-strong: #434a53;
+
+  /* Chữ */
+  --color-text: #e8eaed;
+  --color-text-muted: #a2a8b0;
+
+  /* Người dùng và hành động chính */
+  --color-primary: #7db8ff;
+  --color-primary-hover: #a9d0ff;
+  --color-on-primary: #0d1721;
+
+  /* AI agent */
+  --color-agent: #f5a25d;
+  --color-on-agent: #21150a;
+  --color-agent-surface: #2a2018;
+  --color-agent-border: #5a3f26;
+
+  /* Trạng thái */
+  --color-success: #7fcba4;
+  --color-danger: #ff9d9d;
+  --color-danger-surface: #2c1a1c;
+
+  /* Lớp phủ và nền video */
+  --color-overlay: rgb(0 0 0 / 0.6);
+  --color-preview-bg: #000000;
+
+  /* Timeline */
+  --color-clip-video: #2a3a4d;
+  --color-clip-video-border: #465c75;
+  --color-clip-audio: #1f3029;
+  --color-clip-audio-border: #35524a;
+  --color-waveform: #7fcba4;
+  --color-clip-text: #3a2f4f;
+  --color-clip-text-border: #6f5c94;
+  --color-playhead: #ffffff;
+
+  /* Bo góc */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* Đổ bóng */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.35);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.45);
+
+  /* Khoảng cách */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Chữ */
+  --font-family: "Be Vietnam Pro", system-ui, sans-serif;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  /* Kích thước bố cục */
+  --size-control-sm: 28px;
+  --size-control: 36px;
+  --size-control-lg: 44px;
+  --size-header: 56px;
+  --size-panel-left: 280px;
+  --size-panel-right: 300px;
+  --size-timeline: 300px;
+  --size-ruler: 28px;
+  --size-track: 56px;
+  --size-track-audio: 40px;
+  --size-track-label: 72px;
+  --size-trim-handle: 8px;
+  --size-thumb-width: 72px;
+  --size-thumb-height: 44px;
+}

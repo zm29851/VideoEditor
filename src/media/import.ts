@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import type { Asset, FrameRate } from "../schema.ts";
 import { projectPaths } from "../store.ts";
 import { AUDIO_SAMPLE_RATE, fpsToFilterString, fpsToNumber } from "../time.ts";
-import { ffmpeg } from "./ffmpeg.ts";
+import { ffmpeg, ffmpegWithProgress } from "./ffmpeg.ts";
 import { writeHdrLut } from "./hdr.ts";
 import { probeMedia, type MediaInfo } from "./probe.ts";
 
@@ -35,6 +35,20 @@ export function normalizationReasons(info: MediaInfo, fps: FrameRate): string[] 
   return reasons;
 }
 
+/** Why changing the frame rate may look jerky, or undefined when it should not be visible. */
+export function judderWarning(info: MediaInfo, fps: FrameRate): string | undefined {
+  const target = fpsToNumber(fps);
+  if (info.maxFrameJitter > MAX_JITTER_FRAMES) {
+    return `Video có fps không đều (lệch tối đa ${info.maxFrameJitter.toFixed(1)} frame), đoạn chuyển động có thể bị giật khi đưa về ${target.toFixed(0)} fps.`;
+  }
+  const ratio = Math.max(target, info.averageFps) / Math.min(target, info.averageFps);
+  // Dropping or repeating every Nth frame stays smooth, and so does a 0.1% change like 29.97 to 30.
+  if (Math.abs(ratio - Math.round(ratio)) >= 0.002) {
+    return `Video ${info.averageFps.toFixed(2)} fps sẽ được đổi sang ${target.toFixed(0)} fps, đoạn chuyển động có thể bị giật.`;
+  }
+  return undefined;
+}
+
 export interface VideoEncoderOptions {
   encoder: "libx264" | "h264_videotoolbox";
 }
@@ -45,6 +59,10 @@ function masterVideoArgs(options: VideoEncoderOptions): string[] {
     : ["-c:v", "h264_videotoolbox", "-b:v", "20M"];
 }
 
+function runFfmpeg(onFrame: ((frame: number) => void) | undefined, args: string[]): Promise<unknown> {
+  return onFrame ? ffmpegWithProgress(args, onFrame) : ffmpeg(args);
+}
+
 export async function createMaster(
   source: string,
   output: string,
@@ -52,6 +70,7 @@ export async function createMaster(
   fps: FrameRate,
   lutDir: string,
   options: VideoEncoderOptions = { encoder: "libx264" },
+  onFrame?: (frame: number) => void,
 ): Promise<void> {
   const filters: string[] = [];
   if (info.isHdr) {
@@ -66,7 +85,7 @@ export async function createMaster(
   }
   filters.push(`fps=${fpsToFilterString(fps)}:start_time=0:round=near`, "setsar=1", "format=yuv420p");
 
-  await ffmpeg([
+  await runFfmpeg(onFrame, [
     "-i",
     source,
     "-map",
@@ -98,9 +117,14 @@ export async function createMaster(
   ]);
 }
 
-export async function createProxy(master: string, output: string, fps: FrameRate): Promise<void> {
+export async function createProxy(
+  master: string,
+  output: string,
+  fps: FrameRate,
+  onFrame?: (frame: number) => void,
+): Promise<void> {
   const gop = Math.max(1, Math.round(fpsToNumber(fps) / 2));
-  await ffmpeg([
+  await runFfmpeg(onFrame, [
     "-i",
     master,
     "-map",
@@ -134,6 +158,14 @@ export interface ImportTimings {
   proxySeconds: number;
 }
 
+export interface ImportProgress {
+  stage: string;
+  percent: number;
+}
+
+/** The master takes most of the time when both steps run: encoding it costs more than the small proxy. */
+const MASTER_SHARE = 70;
+
 export interface ImportResult {
   asset: Asset;
   timings: ImportTimings;
@@ -145,23 +177,34 @@ export async function importVideo(
   source: string,
   fps: FrameRate,
   options?: VideoEncoderOptions,
+  onProgress?: (progress: ImportProgress) => void,
 ): Promise<ImportResult> {
   const paths = projectPaths(projectRoot);
   const id = `asset_${randomUUID().slice(0, 8)}`;
+  onProgress?.({ stage: "Đang đọc thông tin video", percent: 0 });
   const info = await probeMedia(source);
   const reasons = normalizationReasons(info, fps);
+  const outputFrames = Math.max(1, Math.round((info.frameCount * fpsToNumber(fps)) / info.averageFps));
+  const proxyStartPercent = reasons.length > 0 ? MASTER_SHARE : 0;
 
   const masterStart = performance.now();
   let masterPath = source;
   if (reasons.length > 0) {
     masterPath = join(paths.masters, `${id}.mp4`);
-    await createMaster(source, masterPath, info, fps, paths.cache, options);
+    await createMaster(source, masterPath, info, fps, paths.cache, options, (frame) =>
+      onProgress?.({ stage: "Đang chuẩn hóa video", percent: (frame / outputFrames) * MASTER_SHARE }),
+    );
   }
   const masterSeconds = (performance.now() - masterStart) / 1000;
 
   const proxyStart = performance.now();
   const proxyPath = join(paths.proxies, `${id}.mp4`);
-  await createProxy(masterPath, proxyPath, fps);
+  await createProxy(masterPath, proxyPath, fps, (frame) =>
+    onProgress?.({
+      stage: "Đang tạo proxy",
+      percent: proxyStartPercent + (frame / outputFrames) * (99 - proxyStartPercent),
+    }),
+  );
   const proxySeconds = (performance.now() - proxyStart) / 1000;
 
   const master = reasons.length > 0 ? await probeMedia(masterPath) : info;
