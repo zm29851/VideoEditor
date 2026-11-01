@@ -66,10 +66,11 @@ export function attachEvents(
     socket.on("error", () => socket.destroy());
     const denied = authorize(req);
     if (denied) return refuse(socket, denied);
-    const projectId = PATH.exec(new URL(req.url ?? "/", "http://localhost").pathname)?.[1];
-    if (!projectId) return refuse(socket, { status: 404, message: "Không có đường dẫn này." });
-    const id = decodeURIComponent(projectId);
+    let id: string;
     try {
+      const projectId = PATH.exec(new URL(req.url ?? "/", "http://localhost").pathname)?.[1];
+      if (!projectId) return refuse(socket, { status: 404, message: "Không có đường dẫn này." });
+      id = decodeURIComponent(projectId);
       workspace.engine(id);
     } catch (error) {
       return refuse(socket, { status: 404, message: error instanceof Error ? error.message : "Không có project này." });

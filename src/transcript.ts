@@ -69,6 +69,30 @@ export function timelineTranscript(project: Project, transcripts: ReadonlyMap<st
   return result;
 }
 
+/**
+ * Stretches of the main track with no words, including before the first and after the last. For places
+ * where background noise hides every pause from a loudness check. Padding keeps some room around the words.
+ */
+export function speechGaps(project: Project, segments: TimelineSegment[], minFrames: number, padding: number): FrameRange[] {
+  const words = segments.flatMap((segment) => segment.words).sort((a, b) => a.start - b.start);
+  const clips = orderedClips(project);
+  const gaps: FrameRange[] = [];
+  let cursor = clips[0]?.start ?? 0;
+  const add = (start: number, end: number, atStart: boolean, atEnd: boolean) => {
+    if (end - start < minFrames) return;
+    const from = atStart ? start : start + padding;
+    const to = atEnd ? end : end - padding;
+    if (to > from) gaps.push({ start: from, end: to });
+  };
+  words.forEach((word, index) => {
+    add(cursor, word.start, index === 0, false);
+    cursor = Math.max(cursor, word.end);
+  });
+  const end = clips.reduce((last, clip) => Math.max(last, clip.start + clip.duration), 0);
+  add(cursor, end, words.length === 0, true);
+  return gaps;
+}
+
 export interface SubtitleCue extends FrameRange {
   text: string;
 }

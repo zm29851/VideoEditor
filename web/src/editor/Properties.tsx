@@ -33,7 +33,7 @@ function CanvasPicker() {
     : [{ value: current, label: `${project.width} × ${project.height}` }, ...CANVASES];
   return (
     <div className={styles.propertyGroup}>
-      <h3 className={styles.groupTitle}>Khung hình của video</h3>
+      <h2 className={styles.groupTitle}>Khung hình của video</h2>
       <Select
         label="Khung hình của video"
         value={current}
@@ -136,7 +136,7 @@ function LookControls({ clip }: { clip: Clip }) {
   const set = (values: { x?: number; y?: number; scale?: number; opacity?: number }): CommandInput => ({ type: "set_transform", clipId: clip.id, ...values });
   return (
     <div className={styles.propertyGroup}>
-      <h3 className={styles.groupTitle}>Vị trí và kích thước</h3>
+      <h2 className={styles.groupTitle}>Vị trí và kích thước</h2>
       {isMediaClip(clip) && (
         <Select
           label="Cách đặt hình vào khung"
@@ -169,7 +169,7 @@ function TransitionControls({ clip }: { clip: Clip }) {
     ]);
   return (
     <div className={styles.propertyGroup}>
-      <h3 className={styles.groupTitle}>Chuyển cảnh từ clip trước</h3>
+      <h2 className={styles.groupTitle}>Chuyển cảnh từ clip trước</h2>
       <Select label="Transition" value={transition?.type ?? "none"} options={TRANSITIONS} onChange={(value) => write(value, duration)} />
       {transition && (
         <div className={styles.volume}>

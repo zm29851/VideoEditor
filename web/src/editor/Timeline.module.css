@@ -205,9 +205,13 @@
   display: block;
 }
 
-.rowDropTarget {
-  outline: 1px dashed var(--color-primary);
-  outline-offset: -1px;
+.audioMarks {
+  position: absolute;
+  top: var(--space-1);
+  left: var(--space-3);
+  display: flex;
+  gap: var(--space-1);
+  pointer-events: none;
 }
 
 .byAgent {

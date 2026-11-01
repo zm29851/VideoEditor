@@ -192,7 +192,9 @@ File âm thanh (`.mp3`, `.wav`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`) đư�
 - Server chỉ nghe trên `127.0.0.1`, yêu cầu token Bearer, từ chối Host và Origin lạ.
 - Chỉ import được file có đuôi video, sau khi đã giải symlink. Mặc định cho phép toàn bộ máy, kể cả với agent có token. `VE_MEDIA_DIRS` giới hạn lại khi cần.
 - Tên project và tên file xuất được kiểm tra. File xuất luôn nằm trong thư mục của project.
-- Token lưu ở `projects/.mcp-token` với quyền `600`.
+- Token lưu ở `projects/.mcp-token` với quyền `600`, được đặt lại mỗi khi server khởi động.
+- Yêu cầu sai định dạng chỉ làm hỏng chính nó, không làm dừng server.
+- Khung hình phải là số chẵn từ 16 đến 7680.
 - Trình duyệt đăng nhập qua `/?token=...`, server chuyển token vào cookie `HttpOnly`, `SameSite=Strict` rồi xóa khỏi địa chỉ. Thẻ video không gửi được header nên cần cookie. `/api` nhận Bearer hoặc cookie, `/mcp` chỉ nhận Bearer.
 - WebSocket kiểm tra token, Host và Origin như `/api`, trước khi nâng cấp kết nối. Trang web lạ không dùng được cookie vì bị chặn ở Origin.
 - File tĩnh của giao diện không cần token vì không chứa dữ liệu người dùng, và có Content-Security-Policy.
@@ -229,8 +231,9 @@ Cài đặt iPhone khuyến nghị: 1080p 30 fps, tắt HDR, tắt FPS tự đ�
 | Agent sửa sai | Không sửa file gốc, undo theo lô, xem trước khi export |
 | Thời gian từng từ | Whisper lệch vài phần mười giây, nhất là ở từ ngay sau đoạn VAD bỏ qua. Phải nghe lại trước khi xuất. Agent được nhắc trong hướng dẫn MCP |
 | Whisper bỏ sót từ thừa | Whisper hay bỏ các tiếng như "ờ", "ừm", nên `possibleFillers` không đủ. Chưa có cách phát hiện từ âm thanh |
-| Không thấy khoảng lặng | Video quay ngoài đường có tiếng nền to hơn -35 dB, nên `detect_silence` không thấy gì. Agent nâng `noiseDb` lên, nhưng chưa có mức tự chọn theo từng video |
+| Không thấy khoảng lặng | Video quay ngoài đường có tiếng nền to hơn -35 dB, nên `detect_silence` không thấy gì. Agent nâng `noiseDb` lên, hoặc dùng `speechGaps` của `detect_silence`, là các đoạn không có lời theo transcript. Video iPhone quay ngoài đường vẫn không thấy khoảng lặng ở -25 dB nhưng có `speechGaps`. Đoạn không lời có thể vẫn có âm thanh đáng giữ, nên phải nghe lại |
 | Nhiều lớp khi xem trước | Mỗi lớp là một thẻ video riêng và được kéo lại khi lệch quá 0,1 giây, nên có thể lệch vài frame so với track chính lúc phát. Chưa đo trên video thật nhiều lớp. Bản xuất không bị |
+| Thư viện zod | `npm audit` báo một lỗi mức cao ở zod 3: dữ liệu quá lớn có thể làm tốn bộ nhớ. Rủi ro thấp vì mọi yêu cầu cần token và thân yêu cầu tối đa 4 MB. Bản sửa là zod 4, đổi phiên bản lớn nên làm riêng |
 | Màu HDR | Mới xem một frame từ iPhone thật, chưa so trực tiếp với bản gốc |
 
 ## Tiến độ dự án
@@ -255,7 +258,7 @@ Trạng thái: `[x]` đã xong và đã kiểm chứng, `[ ]` chưa làm.
 - [x] Export khớp từng frame, tiếng lệch dưới 1 frame
 - [x] Test với 24, 29,97 và 60 fps trên cùng timeline
 - [x] Đo hiệu năng trên video thật, gồm một video iPhone
-- [ ] Merge nhánh `phase-0` vào `main`
+- [x] Merge nhánh `phase-0` vào `main`
 
 ### Phase 1: Agent kết nối qua MCP
 
@@ -265,7 +268,8 @@ Trạng thái: `[x]` đã xong và đã kiểm chứng, `[ ]` chưa làm.
 - [x] Công cụ sửa, `apply_batch`, `undo`, `redo`
 - [x] Job nền: `import_asset`, `render_preview`, `export_video`, `get_job_status`
 - [x] Claude Code tự cắt và export một video mẫu, kết quả đúng từng frame
-- [ ] Commit, push và merge nhánh `phase-1`
+- [ ] Push nhánh lên GitHub
+- [x] Commit và merge nhánh `phase-1` vào `main` trên máy
 
 ### Phase 2: Giao diện cơ bản
 
@@ -316,9 +320,9 @@ Trạng thái: `[x]` đã xong và đã kiểm chứng, `[ ]` chưa làm.
 - [ ] Test với video iPhone SDR quay theo cài đặt khuyến nghị
 - [ ] So màu HDR với bản gốc trên nhiều video thật
 - [ ] Dựng trọn vẹn một video thật, có cả người và agent cùng sửa
-- [ ] Rà soát bảo mật toàn bộ server
-- [ ] Rà soát accessibility theo DESIGN.md
-- [ ] Hoàn thiện tài liệu cài đặt và sử dụng
+- [x] Rà soát bảo mật toàn bộ server
+- [x] Rà soát accessibility theo DESIGN.md
+- [x] Hoàn thiện tài liệu cài đặt và sử dụng
 - [ ] Phát hành bản 1.0
 
 ### Chưa làm trong bản đầu

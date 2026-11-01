@@ -88,6 +88,10 @@ export class Workspace {
   }
 
   create(projectId: string, options: { name?: string; width?: number; height?: number; fps?: FrameRate }): CommandEngine {
+    const { width = 1920, height = 1080 } = options;
+    if (width % 2 !== 0 || height % 2 !== 0 || width < 16 || height < 16 || width > 7680 || height > 7680) {
+      throw new Error(`Khung ${width} × ${height} không hợp lệ: chiều rộng và chiều cao phải là số chẵn, từ 16 đến 7680.`);
+    }
     const engine = createProjectFolder(this.projectRoot(projectId), { name: projectId, ...options });
     this.#engines.set(projectId, engine);
     return engine;

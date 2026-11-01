@@ -15,7 +15,7 @@ import { Workspace } from "../src/mcp/workspace.ts";
 import { Project, TextStyle, type Asset, type CommandInput, type MediaClip } from "../src/schema.ts";
 import { createProjectFolder, openProjectFolder } from "../src/store.ts";
 import { parseFps } from "../src/time.ts";
-import { subtitleCues, type TimelineSegment } from "../src/transcript.ts";
+import { speechGaps, subtitleCues, type TimelineSegment } from "../src/transcript.ts";
 import { findBeepStarts, readPcm } from "./helpers.ts";
 
 const asset = (id: string, frames = 300): Asset => ({
@@ -255,6 +255,22 @@ describe("subtitles", () => {
     expect(cues.map((cue) => cue.text)).toEqual(["một hai", "ba"]);
     expect(cues[0]).toMatchObject({ start: 0, end: 12 });
     expect(subtitleCues([{ ...segment, words: [word("ngắn", 0, 2)] }], 42)[0]!.end).toBe(15);
+  });
+});
+
+describe("stretches with no words", () => {
+  const word = (start: number, end: number) => ({ text: "x", start, end, sourceStart: start, sourceEnd: end, filler: false });
+  const engine = engineWith(asset("a"));
+  apply(engine, { type: "add_clip", trackId: "video_1", assetId: "a", start: 0, duration: 300 });
+  const segment = (words: ReturnType<typeof word>[]): TimelineSegment => ({ clipId: "c", assetId: "a", start: 0, end: 0, text: "", words });
+
+  it("finds the gaps, keeps room around words and ignores short pauses", () => {
+    const gaps = speechGaps(engine.project, [segment([word(30, 40), word(45, 60), word(200, 220)])], 15, 3);
+    expect(gaps).toEqual([{ start: 0, end: 27 }, { start: 63, end: 197 }, { start: 223, end: 300 }]);
+  });
+
+  it("treats a clip with no words as one gap", () => {
+    expect(speechGaps(engine.project, [], 15, 3)).toEqual([{ start: 0, end: 300 }]);
   });
 });
 

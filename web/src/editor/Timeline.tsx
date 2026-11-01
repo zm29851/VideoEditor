@@ -423,7 +423,7 @@ export function Timeline() {
               onDragLeave={() => setGhost(undefined)}
               onDrop={onDrop}
             >
-              {rows.map(({ track }) => {
+              {rows.map(({ track, name }) => {
                 // A clip being dragged shows in the row it would land in.
                 const shown = [
                   ...track.clips.filter((clip) => !(drag && drag.clipId === clip.id && drag.trackId !== track.id)).map((clip) => ({ clip, owner: track })),
@@ -436,7 +436,7 @@ export function Timeline() {
                 const ghostHere = ghost?.trackId === track.id && <Ghost start={ghost.start} duration={ghost.duration} />;
                 if (track.kind === "text") {
                   return (
-                    <div key={track.id} data-track-id={track.id} className={styles.trackVideo}>
+                    <div key={track.id} role="group" aria-label={`Track ${name}`} data-track-id={track.id} className={styles.trackVideo}>
                       {shown.map(({ clip, owner }) => {
                         if (isMediaClip(clip)) return null;
                         return (
@@ -447,11 +447,12 @@ export function Timeline() {
                             layout={layoutOf(clip)}
                             selected={clip.id === selectedId}
                             byAgent={editor.agentClips.has(clip.id)}
-                            label={`Chữ: ${clip.text}, bắt đầu ${frameToTimecode(layoutOf(clip).start, fps)}${agentNote(clip)}`}
+                            label={`Chữ: ${clip.text}, bắt đầu ${frameToTimecode(layoutOf(clip).start, fps)}${clip.transitionIn ? ", có transition" : ""}${agentNote(clip)}`}
                             onPointerDown={(event) => startClipDrag(event, clip, owner)}
                             onClickKey={() => select(clip.id)}
                           >
                             <span data-edge="start" className={styles.handleStart} />
+                            {clip.transitionIn && <Blend className={styles.transitionMark} size={14} aria-hidden />}
                             {editor.agentClips.has(clip.id) && <Bot className={styles.agentMark} size={14} aria-hidden />}
                             <span className={styles.clipName}>{clip.text}</span>
                             <span data-edge="end" className={styles.handleEnd} />
@@ -464,7 +465,7 @@ export function Timeline() {
                 }
                 if (track.kind === "audio") {
                   return (
-                    <div key={track.id} data-track-id={track.id} className={styles.trackAudio}>
+                    <div key={track.id} role="group" aria-label={`Track ${name}`} data-track-id={track.id} className={styles.trackAudio}>
                       {shown.map(({ clip, owner }) => {
                         if (!isMediaClip(clip)) return null;
                         const asset = project.assets.find((candidate) => candidate.id === clip.assetId);
@@ -478,11 +479,17 @@ export function Timeline() {
                             layout={layoutOf(clip)}
                             selected={clip.id === selectedId}
                             byAgent={editor.agentClips.has(clip.id)}
-                            label={`Âm thanh ${asset.name}, bắt đầu ${frameToTimecode(layoutOf(clip).start, fps)}${agentNote(clip)}`}
+                            label={`Âm thanh ${asset.name}, bắt đầu ${frameToTimecode(layoutOf(clip).start, fps)}${clip.transitionIn ? ", có transition" : ""}${agentNote(clip)}`}
                             onPointerDown={(event) => startClipDrag(event, clip, owner)}
                             onClickKey={() => select(clip.id)}
                           >
                             <span data-edge="start" className={styles.handleStart} />
+                            {(editor.agentClips.has(clip.id) || clip.transitionIn) && (
+                              <span className={styles.audioMarks}>
+                                {clip.transitionIn && <Blend size={14} aria-hidden />}
+                                {editor.agentClips.has(clip.id) && <Bot className={styles.agentMark} size={14} aria-hidden />}
+                              </span>
+                            )}
                             {assetPeaks && assetPeaks.length > 0 && <Waveform peaks={assetPeaks} sourceIn={clip.sourceIn} duration={clip.duration} seconds={framesToSeconds(clip.duration, fps)} />}
                             <span data-edge="end" className={styles.handleEnd} />
                           </ClipBlock>
@@ -494,7 +501,7 @@ export function Timeline() {
                 }
                 return (
                   <Fragment key={track.id}>
-                    <div data-track-id={track.id} className={styles.trackVideo}>
+                    <div role="group" aria-label={`Track ${name}`} data-track-id={track.id} className={styles.trackVideo}>
                       {shown.map(({ clip, owner }) => {
                         if (!isMediaClip(clip)) return null;
                         const asset = project.assets.find((candidate) => candidate.id === clip.assetId);

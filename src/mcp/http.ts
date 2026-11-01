@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -17,7 +17,11 @@ const SESSION_COOKIE = "ve_token";
 /** Reuses the token across restarts, so a configured client keeps working. */
 export function loadOrCreateToken(workspaceRoot: string): string {
   const path = join(workspaceRoot, ".mcp-token");
-  if (existsSync(path)) return readFileSync(path, "utf8").trim();
+  if (existsSync(path)) {
+    // A copy or a restore from backup can widen the permissions.
+    chmodSync(path, 0o600);
+    return readFileSync(path, "utf8").trim();
+  }
   const token = randomBytes(32).toString("hex");
   writeFileSync(path, `${token}\n`, { mode: 0o600 });
   return token;
@@ -106,7 +110,7 @@ export function startMcpHttpServer(
   options: ServerOptions = {},
 ): Promise<McpHttpServer> {
   return new Promise((resolve, reject_) => {
-    const server = createServer(async (req, res) => {
+    const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
       const actualPort = (server.address() as AddressInfo).port;
       const problem = accessProblem(req, actualPort);
       if (problem) return reject(res, 403, problem);
@@ -166,6 +170,14 @@ export function startMcpHttpServer(
       } catch (error) {
         if (!res.headersSent) reject(res, 500, error instanceof Error ? error.message : "Lỗi server.");
       }
+    };
+
+    // A bad request must only fail itself. A rejection here would otherwise end the whole process.
+    const server = createServer((req, res) => {
+      handle(req, res).catch(() => {
+        if (res.headersSent) res.destroy();
+        else reject(res, 400, "Yêu cầu không hợp lệ.");
+      });
     });
 
     const events = attachEvents(server, workspace, (req) => {

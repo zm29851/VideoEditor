@@ -485,3 +485,42 @@ describe("Phase 5 through MCP", () => {
     expect(again.content[0]!.text).toContain("đã kết thúc");
   }, 60_000);
 });
+
+describe("requests that must not take the server down", () => {
+  const origin = () => new URL(http.url).origin;
+
+  async function rawRequest(path: string, extra = ""): Promise<string> {
+    const { connect } = await import("node:net");
+    const url = new URL(http.url);
+    return new Promise((resolve, reject) => {
+      const socket = connect(Number(url.port), url.hostname, () => socket.write(`GET ${path} HTTP/1.1\r\nHost: ${url.host}\r\n${extra}Connection: ${extra ? "Upgrade" : "close"}\r\n\r\n`));
+      let reply = "";
+      socket.on("data", (chunk) => (reply += chunk.toString()));
+      socket.on("close", () => resolve(reply));
+      socket.on("end", () => resolve(reply));
+      socket.on("error", reject);
+    });
+  }
+
+  it("answers a malformed address and keeps running", async () => {
+    for (const path of ["/%zz", "//", "/api/projects/%zz", "/api/%E0%A4%A"]) {
+      expect(await rawRequest(path)).toMatch(/^HTTP\/1\.1 4/);
+    }
+    expect((await call<{ projects: string[] }>("list_projects", {})).projects).toBeDefined();
+    expect((await fetch(`${origin()}/mcp`, { headers: { authorization: `Bearer ${TOKEN}` } })).status).toBe(405);
+  });
+
+  it("refuses a malformed WebSocket address and keeps running", async () => {
+    const upgrade = `Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer ${TOKEN}\r\n`;
+    expect(await rawRequest("/api/projects/%zz/events", upgrade)).toMatch(/^HTTP\/1\.1 404/);
+    expect(await rawRequest("//", upgrade)).toMatch(/^HTTP\/1\.1 404/);
+    expect((await call<{ projects: string[] }>("list_projects", {})).projects).toBeDefined();
+  });
+
+  it("refuses a canvas FFmpeg could not encode", async () => {
+    for (const size of [{ width: 1081, height: 1920 }, { width: 100000, height: 1080 }]) {
+      const result = await raw("create_project", { projectId: `bad${size.width}`, ...size });
+      expect(result.content[0]!.text).toContain("không hợp lệ");
+    }
+  });
+});

@@ -6,7 +6,7 @@ import { timelineDuration } from "../media/export.ts";
 import { extractFilmstrip, extractFrame, type FrameSource } from "../media/frames.ts";
 import { assetLoudness, clipsLoudness, detectSilence, timelineLoudness } from "../media/analyze.ts";
 import { framesToSeconds, frameToTimecode, parseFps, secondsToFrame } from "../time.ts";
-import { sourceRangesOnTimeline, subtitleCues, timelineTranscript, type FrameRange, type TimelineSegment } from "../transcript.ts";
+import { sourceRangesOnTimeline, speechGaps, subtitleCues, timelineTranscript, type FrameRange, type TimelineSegment } from "../transcript.ts";
 import type { Workspace } from "./workspace.ts";
 
 const ACTOR: Actor = "agent";
@@ -24,7 +24,7 @@ Workflow:
 
 To edit by what is said: transcribe_asset (a slow job, roughly 0.7 times the video's length with the large model), then get_transcript. Its frames are timeline frames. detect_silence, detect_scenes and get_loudness measure the rest.
 
-To remove pauses and filler words: call detect_silence and get_transcript at the same revision, choose the ranges, then send them all in one delete_ranges, which reads every range against the timeline before it runs and closes the gaps. Whisper timings can be off by a few tenths of a second and it often leaves out sounds like "ờ", so listen with render_preview before exporting. The filler flag is only a hint: read the sentence, since "à" can be a real word. Whisper also invents lines over noise, such as requests to subscribe: check odd lines with get_frame or by listening before relying on them.
+To remove pauses and filler words: call detect_silence and get_transcript at the same revision, choose the ranges (use speechGaps from detect_silence when noise hides the pauses), then send them all in one delete_ranges, which reads every range against the timeline before it runs and closes the gaps. Whisper timings can be off by a few tenths of a second and it often leaves out sounds like "ờ", so listen with render_preview before exporting. The filler flag is only a hint: read the sentence, since "à" can be a real word. Whisper also invents lines over noise, such as requests to subscribe: check odd lines with get_frame or by listening before relying on them.
 
 Every edit needs baseRevision, the revision from your last read. If it is rejected as stale, the timeline has changed: call get_timeline and decide again. Do not blindly retry. Originals are never modified, and undo reverts a whole batch.
 
@@ -591,7 +591,7 @@ export function createMcpServer(workspace: Workspace): McpServer {
     "detect_silence",
     {
       description:
-        "Find quiet parts of the timeline, ready for delete_ranges. If it finds nothing in a noisy room, raise noiseDb, for example to -30.",
+        "Find quiet parts of the timeline, ready for delete_ranges. If it finds nothing in a noisy place, raise noiseDb, for example to -30, or use speechGaps: stretches with no words according to the transcript, which background noise cannot hide. A gap can still hold sound worth keeping, so look or listen before cutting it.",
       inputSchema: {
         projectId: ProjectId,
         noiseDb: z.number().min(-90).max(0).default(-35).describe("Anything quieter than this counts as silence."),
@@ -613,6 +613,10 @@ export function createMcpServer(workspace: Workspace): McpServer {
         .map((range) => ({ ...range, start: range.start + padding, end: range.end - padding }))
         .filter((range) => range.end > range.start);
       const total = ranges.reduce((sum, range) => sum + range.end - range.start, 0);
+      const transcripts = workspace.transcripts(projectId);
+      const gaps = used.some((asset) => transcripts.has(asset.id))
+        ? speechGaps(project, timelineTranscript(project, transcripts), minFrames, padding)
+        : undefined;
       return json({
         revision: project.revision,
         ranges: ranges.map((range) => ({
@@ -625,6 +629,16 @@ export function createMcpServer(workspace: Workspace): McpServer {
         totalFrames: total,
         totalSeconds: Math.round(framesToSeconds(total, fps) * 100) / 100,
         assetsWithoutAudio: used.filter((asset) => !asset.hasAudio).map((asset) => asset.id),
+        ...(gaps
+          ? {
+              speechGaps: gaps.map((range) => ({
+                start: { frame: range.start },
+                end: { frame: range.end },
+                startTimecode: frameToTimecode(range.start, fps),
+                seconds: Math.round(framesToSeconds(range.end - range.start, fps) * 100) / 100,
+              })),
+            }
+          : { speechGapsNote: "Transcribe the video to also get the stretches with no words." }),
       });
     }),
   );

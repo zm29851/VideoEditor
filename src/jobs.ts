@@ -72,7 +72,7 @@ export class JobQueue {
   #save(): void {
     if (!this.#file) return;
     try {
-      writeFileSync(`${this.#file}.tmp`, JSON.stringify([...this.#jobs.values()]));
+      writeFileSync(`${this.#file}.tmp`, JSON.stringify([...this.#jobs.values()]), { mode: 0o600 });
       renameSync(`${this.#file}.tmp`, this.#file);
     } catch (error) {
       // Only the record after a restart is lost. The work itself must not fail because of it.
