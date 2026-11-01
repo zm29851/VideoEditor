@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { attachEvents } from "../api/events.ts";
 import { handleApi } from "../api/routes.ts";
 import { serveWebApp } from "../api/static.ts";
 import { createMcpServer } from "./tools.ts";
@@ -40,9 +41,27 @@ function cookieToken(req: IncomingMessage): string {
   return "";
 }
 
+/** Host and Origin stop a web page from reaching this server through the browser. */
+function accessProblem(req: IncomingMessage, port: number): string | undefined {
+  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  if (!allowedHosts.has(req.headers.host ?? "")) return "Host không được phép.";
+  const origin = req.headers.origin;
+  if (origin && !["http://", "https://"].some((scheme) => allowedHosts.has(origin.replace(scheme, "")))) {
+    return "Origin không được phép.";
+  }
+  return undefined;
+}
+
 function reject(res: ServerResponse, status: number, message: string): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message }, id: null }));
+}
+
+/** MCP names its client once, when it connects. */
+function mcpClientName(body: unknown): string | undefined {
+  const message = body as { method?: unknown; params?: { clientInfo?: { name?: unknown } } } | null;
+  const name = message?.method === "initialize" ? message.params?.clientInfo?.name : undefined;
+  return typeof name === "string" ? name.slice(0, 100) : undefined;
 }
 
 function readBody(req: IncomingMessage): Promise<unknown> {
@@ -89,14 +108,8 @@ export function startMcpHttpServer(
   return new Promise((resolve, reject_) => {
     const server = createServer(async (req, res) => {
       const actualPort = (server.address() as AddressInfo).port;
-      const allowedHosts = new Set([`127.0.0.1:${actualPort}`, `localhost:${actualPort}`]);
-
-      // Host and Origin stop a web page from reaching this server through the browser.
-      if (!allowedHosts.has(req.headers.host ?? "")) return reject(res, 403, "Host không được phép.");
-      const origin = req.headers.origin;
-      if (origin && !["http://", "https://"].some((scheme) => allowedHosts.has(origin.replace(scheme, "")))) {
-        return reject(res, 403, "Origin không được phép.");
-      }
+      const problem = accessProblem(req, actualPort);
+      if (problem) return reject(res, 403, problem);
       const url = new URL(req.url ?? "/", "http://localhost");
       const bearerOk = sameToken(req.headers.authorization ?? "", `Bearer ${token}`);
 
@@ -137,6 +150,9 @@ export function startMcpHttpServer(
         return reject(res, 400, error instanceof Error ? error.message : "Yêu cầu không hợp lệ.");
       }
 
+      workspace.agent.requestStarted(mcpClientName(body));
+      res.once("close", () => workspace.agent.requestFinished());
+
       // Stateless: each request gets its own protocol session; all state lives in the workspace.
       const mcp = createMcpServer(workspace);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -152,6 +168,13 @@ export function startMcpHttpServer(
       }
     });
 
+    const events = attachEvents(server, workspace, (req) => {
+      const problem = accessProblem(req, (server.address() as AddressInfo).port);
+      if (problem) return { status: 403, message: problem };
+      const allowed = sameToken(req.headers.authorization ?? "", `Bearer ${token}`) || sameToken(cookieToken(req), token);
+      return allowed ? undefined : { status: 401, message: "Thiếu hoặc sai token." };
+    });
+
     server.on("error", reject_);
     server.listen(port, HOST, () => {
       const actualPort = (server.address() as AddressInfo).port;
@@ -160,6 +183,7 @@ export function startMcpHttpServer(
         url: `http://${HOST}:${actualPort}/mcp`,
         close: () =>
           new Promise((done) => {
+            events.close();
             server.closeAllConnections();
             server.close(() => done());
           }),

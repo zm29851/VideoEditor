@@ -1,3 +1,4 @@
+import type { MediaClip } from "../src/schema.ts";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -327,8 +328,8 @@ describe("preview matches export", () => {
     for (const asset of edited.assets) proxies.set(asset.id, await readBarcodes(asset.proxyPath));
     for (let frame = 0; frame < 60; frame++) {
       const clip = clipAt(clips, frame)!;
-      const seconds = seekTimeForFrame(clip.sourceIn + frame - clip.start, edited.fps);
-      const shown = proxies.get(clip.assetId)![frameAtTime(seconds, edited.fps)];
+      const seconds = seekTimeForFrame((clip as MediaClip).sourceIn + frame - clip.start, edited.fps);
+      const shown = proxies.get((clip as MediaClip).assetId)![frameAtTime(seconds, edited.fps)];
       expect(shown, `frame ${frame}`).toEqual(exported[frame]);
     }
   }, 120_000);
@@ -358,5 +359,37 @@ describe("helpers", () => {
     pcm[10] = -0.5;
     pcm[300] = 0.25;
     expect(peaksPerFrame(pcm, 2, FPS)).toEqual([0.5, 0.25]);
+  });
+});
+
+describe("Phase 5 routes", () => {
+  it("creates a project at a chosen fps and refuses one out of range", async () => {
+    const created = await ok("/projects", { body: { id: "rate", name: "Rate", width: 320, height: 180, fps: { num: 25, den: 1 } } });
+    expect(created.project.fps).toEqual({ num: 25, den: 1 });
+    const bad = await api("/projects", { body: { id: "rate2", name: "Rate", width: 320, height: 180, fps: { num: 500, den: 1 } } });
+    expect(bad.status).toBe(400);
+  });
+
+  it("serves the picture of a text clip, and 404 for anything else", async () => {
+    const { project } = await ok("/projects", { body: { id: "words", name: "Words", width: 320, height: 180 } });
+    const state = await ok("/projects/words/batch", {
+      body: {
+        baseRevision: project.revision,
+        label: "Chữ",
+        commands: [
+          { type: "add_track", kind: "text", id: "t" },
+          { type: "add_text", trackId: "t", start: 0, duration: 30, text: "Xin chào" },
+        ],
+      },
+    });
+    const image = await api(`/projects/words/clips/${state.createdClipIds[0]}/text-image`);
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    expect((await api("/projects/words/clips/nope/text-image")).status).toBe(404);
+  });
+
+  it("refuses to cancel or dismiss a job of another project", async () => {
+    await ok("/projects", { body: { id: "jobs", name: "Jobs", width: 320, height: 180 } });
+    expect((await api("/projects/jobs/jobs/job_nope/cancel", { body: {} })).status).toBe(404);
   });
 });

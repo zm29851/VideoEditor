@@ -227,6 +227,23 @@ describe("errors an agent can act on", () => {
     expect((await call("get_timeline", { projectId: "stale" })).tracks[0].clips).toHaveLength(1);
   }, 60_000);
 
+  it("a batch can cut a clip and change the new part without guessing its id", async () => {
+    const { assetId, revision } = await setupProject("alias");
+    const result = await call("apply_batch", {
+      projectId: "alias",
+      baseRevision: revision,
+      label: "Cắt rồi giảm tiếng",
+      commands: [
+        { type: "add_clip", as: "goc", assetId, start: { frame: 0 }, duration: { seconds: 2 } },
+        { type: "split_clip", as: "phan_sau", clipId: "goc", at: { seconds: 1 } },
+        { type: "set_volume", clipId: "phan_sau", volume: 50 },
+      ],
+    });
+    expect(result.aliases.phan_sau).toBe(result.createdClipIds[1]);
+    const second = result.clips.find((clip: { id: string }) => clip.id === result.aliases.phan_sau);
+    expect(second).toMatchObject({ start: 30, duration: 30, volume: 50 });
+  }, 60_000);
+
   it("a failing batch changes nothing", async () => {
     const { assetId, revision } = await setupProject("atomic");
     const result = await raw("apply_batch", {
@@ -331,4 +348,140 @@ describe("boundaries", () => {
     expect(reopened.engine("accept").project).toEqual(workspace.engine("accept").project);
     expect(readFileSync(join(workspace.root, "accept", "project.json"), "utf8")).toContain('"revision"');
   });
+
+  it("removes pauses found by detect_silence as one undo step, with the sound kept in step", async () => {
+    const { assetId, revision } = await setupProject("pauses");
+    const added = await call("add_clip", { projectId: "pauses", baseRevision: revision, assetId, start: { frame: 0 }, duration: { frame: 180 } });
+
+    // The source beeps for 0.1 s at the start of each second, so there are five full pauses and a last one.
+    const silence = await call("detect_silence", { projectId: "pauses", minSeconds: 0.5, paddingSeconds: 0 });
+    expect(silence.ranges.length).toBe(6);
+    expect(silence.revision).toBe(added.revision);
+
+    const result = await call("delete_ranges", {
+      projectId: "pauses",
+      baseRevision: silence.revision,
+      label: "Bỏ khoảng lặng",
+      ranges: silence.ranges.map(({ start, end }: { start: object; end: object }) => ({ start, end })),
+    });
+    expect(result.durationFrames).toBe(180 - silence.totalFrames);
+    expect(result.clips.length).toBe(6);
+
+    const stale = await raw("delete_ranges", { projectId: "pauses", baseRevision: silence.revision, label: "x", ranges: [{ start: { frame: 0 }, end: { frame: 1 } }] });
+    expect(stale.isError).toBe(true);
+
+    const history = await call("get_history", { projectId: "pauses", limit: 1 });
+    expect(history[0].label).toBe("Bỏ khoảng lặng");
+
+    const undone = await call("undo", { projectId: "pauses", baseRevision: result.revision });
+    const timeline = await call("get_timeline", { projectId: "pauses" });
+    expect(timeline.revision).toBe(undone.revision);
+    expect(timeline.durationFrames).toBe(180);
+  });
+
+  it("says which videos still need a transcript, and measures the timeline", async () => {
+    const { assetId, revision } = await setupProject("words");
+    await call("add_clip", { projectId: "words", baseRevision: revision, assetId, start: { frame: 0 }, duration: { frame: 90 } });
+    const transcript = await call("get_transcript", { projectId: "words" });
+    expect(transcript.segments).toEqual([]);
+    expect(transcript.assetsWithoutTranscript.map((asset: { id: string }) => asset.id)).toEqual([assetId]);
+    expect((await call("get_loudness", { projectId: "words" })).integratedLufs).toBeLessThan(0);
+    expect((await finished((await call("detect_scenes", { projectId: "words", threshold: 0.9 })).id)).revision).toBeGreaterThan(0);
+  });
+
+  it("explains what to do when whisper is not installed", async () => {
+    const { assetId } = await setupProject("nowhisper");
+    const saved = { path: process.env.PATH, home: process.env.HOME, bin: process.env.VE_WHISPER_BIN };
+    delete process.env.VE_WHISPER_BIN;
+    process.env.PATH = "/usr/bin";
+    process.env.HOME = base;
+    try {
+      const result = await raw("transcribe_asset", { projectId: "nowhisper", assetId });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("VE_WHISPER_BIN");
+    } finally {
+      process.env.PATH = saved.path;
+      process.env.HOME = saved.home;
+      if (saved.bin !== undefined) process.env.VE_WHISPER_BIN = saved.bin;
+    }
+  });
+});
+
+describe("Phase 5 through MCP", () => {
+  it("creates a project at a chosen fps and rejects a bad one with a readable message", async () => {
+    const project = await call("create_project", { projectId: "fps25", width: 320, height: 180, fps: "25" });
+    expect(project.fps).toBe("25/1");
+    const bad = await raw("create_project", { projectId: "fpsbad", fps: "abc" });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]!.text).toContain("không hợp lệ");
+  });
+
+  it("builds layers, text, a transition and keyframes in one batch, and exports them", async () => {
+    const { assetId, revision } = await setupProject("layers");
+    const result = await call("apply_batch", {
+      projectId: "layers",
+      baseRevision: revision,
+      label: "Dựng nhiều lớp",
+      commands: [
+        { type: "add_track", kind: "video", id: "over" },
+        { type: "add_track", kind: "text", id: "subs" },
+        { type: "add_clip", trackId: "video_1", assetId, start: { frame: 0 }, duration: { seconds: 1 } },
+        { type: "add_clip", as: "second", trackId: "video_1", assetId, start: { seconds: 1 }, sourceIn: { seconds: 2 }, duration: { seconds: 1 } },
+        { type: "set_transition", clipId: "second", transition: { type: "crossfade", duration: { frame: 10 } } },
+        { type: "add_clip", as: "pip", trackId: "over", assetId, start: { frame: 5 }, duration: { frame: 20 } },
+        { type: "set_transform", clipId: "pip", scale: 0.5, x: 0.25 },
+        { type: "set_keyframes", clipId: "pip", property: "opacity", keyframes: [{ at: { frame: 0 }, value: 0 }, { at: { frame: 19 }, value: 1 }] },
+        { type: "add_text", trackId: "subs", start: { frame: 0 }, duration: { frame: 30 }, text: "Xin chào" },
+      ],
+    });
+    expect(result.aliases.second).toBeDefined();
+
+    const timeline = await call("get_timeline", { projectId: "layers" });
+    expect(timeline.tracks.map((track: { kind: string }) => track.kind)).toEqual(["video", "video", "text"]);
+    expect(timeline.tracks[0].clips[1].transitionApplied).toBe("crossfade over 10 frames");
+
+    const frame = await raw("get_frame", { projectId: "layers", at: { frame: 15 } });
+    expect(frame.isError).toBeUndefined();
+    expect(frame.content[1]!.mimeType).toBe("image/jpeg");
+
+    const job = await call("export_video", { projectId: "layers", name: "layers" });
+    const done = await finished(job.id);
+    expect((await probeMedia(done.path)).frameCount).toBe(60);
+  }, 60_000);
+
+  it("changes the canvas with one tool, and undo brings it back", async () => {
+    const { revision } = await setupProject("portrait");
+    const changed = await call("set_canvas", { projectId: "portrait", baseRevision: revision, width: 180, height: 320 });
+    expect((await call("get_timeline", { projectId: "portrait" })).size).toBe("180x320");
+    await call("undo", { projectId: "portrait", baseRevision: changed.revision });
+    expect((await call("get_timeline", { projectId: "portrait" })).size).toBe("320x180");
+  }, 60_000);
+
+  it("fills a text track with subtitles from the transcript", async () => {
+    const { assetId, revision } = await setupProject("subs");
+    const added = await call("add_clip", { projectId: "subs", baseRevision: revision, assetId, start: { frame: 0 }, duration: { frame: 150 } });
+    const empty = await raw("generate_subtitles", { projectId: "subs", baseRevision: added.revision });
+    expect(empty.content[0]!.text).toContain("transcribe_asset");
+
+    const folder = join(workspace.projectRoot("subs"), "transcripts");
+    mkdirSync(folder, { recursive: true });
+    const word = (text: string, start: number, end: number) => ({ text, start, end, probability: 1 });
+    writeFileSync(join(folder, `${assetId}.json`), JSON.stringify({ assetId, language: "vi", model: "m", segments: [{ words: [word("Xin", 0, 20), word("chào", 20, 40)] }, { words: [word("các", 90, 100), word("bạn", 100, 120)] }] }));
+
+    const result = await call("generate_subtitles", { projectId: "subs", baseRevision: added.revision });
+    expect(result.count).toBe(2);
+    const track = (await call("get_timeline", { projectId: "subs" })).tracks.find((candidate: { id: string }) => candidate.id === result.trackId);
+    expect(track.clips.map((clip: { text: string; start: number }) => [clip.text, clip.start])).toEqual([["Xin chào", 0], ["các bạn", 90]]);
+  }, 60_000);
+
+  it("cancels a job, and says so when it has already ended", async () => {
+    const { assetId, revision } = await setupProject("stop");
+    await call("add_clip", { projectId: "stop", baseRevision: revision, assetId, start: { frame: 0 }, duration: { frame: 150 } });
+    const job = await call("export_video", { projectId: "stop", name: "stop" });
+    await call("cancel_job", { jobId: job.id });
+    const status = await call("get_job_status", { jobId: job.id, waitSeconds: 20 });
+    expect(status.status).toBe("cancelled");
+    const again = await raw("cancel_job", { jobId: job.id });
+    expect(again.content[0]!.text).toContain("đã kết thúc");
+  }, 60_000);
 });

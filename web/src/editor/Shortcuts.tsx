@@ -14,13 +14,18 @@ const LIST: Array<[string, string]> = [
   ["Bỏ phần trước, sau playhead", "[ ]"],
   ["Di chuyển clip một frame", ", ."],
   ["Di chuyển clip mười frame", "⇧, ⇧."],
+  ["Chuyển clip lên, xuống track khác", "⌥↑ ⌥↓"],
+  ["Thêm chữ tại playhead", "T"],
   ["Xóa clip", "Delete"],
   ["Xóa và dồn", "⇧Delete"],
   ["Bỏ chọn clip", "Esc"],
+  ["Trong Transcript: đi giữa các từ, chọn đoạn", "← → ⇧← ⇧→"],
+  ["Trong Transcript: xóa và dồn đoạn đã chọn", "Delete"],
   ["Bật, tắt bám điểm cắt", "N"],
   ["Phóng to, thu nhỏ timeline", "+ −"],
   ["Vừa khít timeline", "⇧Z"],
   ["Hoàn tác, làm lại", "⌘Z ⇧⌘Z"],
+  ["Hoàn tác lô mới nhất của agent", "⌥⌘Z"],
   ["Xuất video", "⌘E"],
   ["Xem phím tắt", "?"],
 ];
@@ -63,11 +68,12 @@ export function useShortcuts(editor: EditorContextValue | null): void {
       const { player } = e;
       const command = event.metaKey || event.ctrlKey;
       const secondFrames = Math.round(e.project.fps.num / e.project.fps.den);
-      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      // Option changes the character a key types on a Mac, so this one is read from the physical key.
+      const key = event.altKey && event.code === "KeyZ" ? "z" : event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
       const actions: Record<string, () => void> = command
         ? {
-            z: event.shiftKey ? e.redo : e.undo,
+            z: event.altKey ? e.revertLatestAgentBatch : event.shiftKey ? e.redo : e.undo,
             e: e.openExport,
           }
         : {
@@ -75,16 +81,19 @@ export function useShortcuts(editor: EditorContextValue | null): void {
             ArrowLeft: () => player.step(event.shiftKey ? -secondFrames : -1),
             ArrowRight: () => player.step(event.shiftKey ? secondFrames : 1),
             ArrowUp: () => {
+              if (event.altKey) return e.moveToTrack(1);
               const previous = cutPoints(e.clips).filter((point) => point < player.frame).at(-1);
               player.seek(previous ?? 0);
             },
             ArrowDown: () => {
+              if (event.altKey) return e.moveToTrack(-1);
               const next = cutPoints(e.clips).find((point) => point > player.frame);
               if (next !== undefined) player.seek(next);
             },
             Home: () => player.seek(0),
             End: () => player.seek(player.duration),
             s: e.cut,
+            t: e.addText,
             "[": () => e.trimToPlayhead("start"),
             "]": () => e.trimToPlayhead("end"),
             ",": () => e.nudge(-1),

@@ -18,6 +18,38 @@
   flex-grow: 1;
 }
 
+.notice {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 var(--space-4) var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-agent-surface);
+  border: 1px solid var(--color-agent-border);
+  border-radius: var(--radius-md);
+  color: var(--color-agent);
+}
+
+.noticeText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noticeText strong {
+  color: var(--color-agent);
+  font-weight: var(--font-weight-semibold);
+}
+
+.noticeAction {
+  flex-shrink: 0;
+  color: var(--color-agent);
+}
+
 .zoomSlider {
   width: 140px;
   margin: 0 var(--space-2);
@@ -27,6 +59,7 @@
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .labels {
@@ -43,6 +76,7 @@
 .labelAudio {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding-left: var(--space-4);
 }
 
@@ -55,9 +89,19 @@
   margin-top: var(--space-1);
 }
 
+.labelAudioSpaced {
+  margin-top: var(--space-1);
+}
+
+.labelVideo + .labelVideo {
+  margin-top: var(--space-1);
+}
+
 .scroller {
   flex: 1 1 auto;
+  align-self: flex-start;
   min-width: 0;
+  min-height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
 }
@@ -91,7 +135,10 @@
 
 .tracks {
   position: relative;
-  height: calc(100% - var(--size-ruler));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: var(--size-track);
   touch-action: none;
 }
 
@@ -107,7 +154,6 @@
 
 .trackAudio {
   height: var(--size-track-audio);
-  margin-top: var(--space-1);
 }
 
 .clip {
@@ -138,9 +184,39 @@
   text-align: left;
 }
 
+.clipText {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  background: var(--color-clip-text);
+  border: 1px solid var(--color-clip-text-border);
+  text-align: left;
+}
+
+.transitionMark {
+  flex-shrink: 0;
+  margin-left: var(--space-2);
+}
+
 .clipAudio {
   background: var(--color-clip-audio);
   border: 1px solid var(--color-clip-audio-border);
+  display: block;
+}
+
+.rowDropTarget {
+  outline: 1px dashed var(--color-primary);
+  outline-offset: -1px;
+}
+
+.byAgent {
+  border: 2px solid var(--color-agent);
+}
+
+.agentMark {
+  flex-shrink: 0;
+  color: var(--color-agent);
 }
 
 .selected {
@@ -214,7 +290,7 @@
 .ghost {
   position: absolute;
   top: 0;
-  height: calc(var(--size-track) + var(--size-track-audio) + var(--space-1));
+  bottom: 0;
   left: calc(var(--clip-start) * var(--px-per-frame) * 1px);
   width: calc(var(--clip-duration) * var(--px-per-frame) * 1px);
   border: 2px dashed var(--color-primary);

@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize, sep } from "node:path";
 
 const CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".m4a": "audio/mp4",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",

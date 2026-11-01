@@ -6,8 +6,8 @@ import type { CommandEngine } from "../src/engine.ts";
 import { exportProject } from "../src/media/export.ts";
 import { ffmpeg } from "../src/media/ffmpeg.ts";
 import { hdrToSdrPixel } from "../src/media/hdr.ts";
-import { importVideo } from "../src/media/import.ts";
-import { probeMedia } from "../src/media/probe.ts";
+import { createMaster, importVideo, normalizationReasons } from "../src/media/import.ts";
+import { chooseAudioStream, probeMedia } from "../src/media/probe.ts";
 import type { Asset, CommandInput, FrameRate } from "../src/schema.ts";
 import { createProjectFolder } from "../src/store.ts";
 import { findBeepStarts, makeSource, readBarcodes, readPcm, sampleFrameGray } from "./helpers.ts";
@@ -332,4 +332,46 @@ describe("timeline features in export", () => {
     expect(readFileSync(source).equals(before)).toBe(true);
     expect(statSync(source).mtimeMs).toBe(modified);
   }, 60_000);
+});
+
+describe("audio an FFmpeg cannot decode, as on an iPhone with spatial audio", () => {
+  const decodable = new Set(["aac"]);
+
+  it("takes the first stream it can read and remembers what it passed over", () => {
+    expect(chooseAudioStream(["apple_apac", "aac"], decodable)).toEqual({ index: 1, skipped: "apple_apac" });
+    expect(chooseAudioStream(["aac", "apple_apac"], decodable)).toEqual({ index: 0, skipped: undefined });
+    expect(chooseAudioStream(["apple_apac"], decodable)).toEqual({ index: undefined, skipped: "apple_apac" });
+    expect(chooseAudioStream([], decodable)).toEqual({ index: undefined, skipped: undefined });
+  });
+
+  async function twoAudioStreams(path: string): Promise<void> {
+    await ffmpeg([
+      "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=1",
+      "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=1",
+      "-f", "lavfi", "-i", "sine=f=440:r=48000:d=1",
+      "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
+    ]);
+  }
+
+  it("the master holds the chosen stream first, so everything after import can read it", async () => {
+    const source = join(work, "two-audio.mp4");
+    await twoAudioStreams(source);
+    const info = { ...(await probeMedia(source)), audioIndex: 1, skippedAudioCodec: "apple_apac" };
+    expect(normalizationReasons(info, FPS_30).join()).toContain("apple_apac");
+
+    const master = join(work, "two-audio-master.mp4");
+    await createMaster(source, master, info, FPS_30, work);
+    expect((await readPcm(master)).some((sample) => Math.abs(sample) > 0.05)).toBe(true);
+  }, 30_000);
+
+  it("with nothing readable the master has no sound, and the video still imports", async () => {
+    const source = join(work, "two-audio-2.mp4");
+    await twoAudioStreams(source);
+    const info = { ...(await probeMedia(source)), hasAudio: false, audioIndex: undefined, skippedAudioCodec: "apple_apac" };
+    expect(normalizationReasons(info, FPS_30).join()).toContain("không có tiếng");
+
+    const master = join(work, "no-audio-master.mp4");
+    await createMaster(source, master, info, FPS_30, work);
+    expect((await probeMedia(master)).hasAudio).toBe(false);
+  }, 30_000);
 });

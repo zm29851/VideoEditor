@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { Asset, Clip } from "../../../src/schema.ts";
+import type { Asset, Clip, MediaClip, Track } from "../../../src/schema.ts";
 import {
   clipAt,
   cutPoints,
   frameAtTime,
   nearestFreeStart,
+  neighbourTrack,
+  trackAccepts,
   resolveMove,
   resolveTrim,
   rulerStep,
@@ -15,7 +17,7 @@ import {
 
 const FPS = { num: 30, den: 1 };
 
-function clip(id: string, start: number, duration: number, sourceIn = 0): Clip {
+function clip(id: string, start: number, duration: number, sourceIn = 0): MediaClip {
   return { id, assetId: "a", start, sourceIn, duration, volume: 100 };
 }
 const asset = { durationFrames: 300 } as Asset;
@@ -92,7 +94,7 @@ describe("trimming", () => {
   it("keeps the source frame under the end edge when trimming the start", () => {
     const before = clip("a", 100, 50, 20);
     const after = resolveTrim(before, asset, [], "start", 110);
-    expect(after.sourceIn + after.duration).toBe(before.sourceIn + before.duration);
+    expect(after.sourceIn! + after.duration).toBe(before.sourceIn + before.duration);
     expect(after.start + after.duration).toBe(before.start + before.duration);
   });
 });
@@ -116,5 +118,37 @@ describe("helpers", () => {
   it("turns a Vietnamese name into a folder name", () => {
     expect(slugify("Video đầu tiên của tôi!")).toBe("Video-dau-tien-cua-toi");
     expect(slugify("!!!")).toBe("");
+  });
+});
+
+describe("tracks", () => {
+  const video = { id: "a", hasVideo: true, hasAudio: true, durationFrames: 300 } as Asset;
+  const sound = { id: "s", hasVideo: false, hasAudio: true, durationFrames: 300 } as Asset;
+  const text: Clip = { id: "t", kind: "text", start: 0, duration: 10, text: "x", style: { fontSize: 5, color: "#ffffff", background: null, weight: 600 } };
+  const media = clip("c", 0, 10);
+  const tracks: Track[] = [
+    { id: "v1", kind: "video", clips: [media] },
+    { id: "m", kind: "audio", clips: [] },
+    { id: "v2", kind: "video", clips: [] },
+    { id: "s", kind: "text", clips: [text] },
+  ];
+
+  it("lets each track take only what it can play", () => {
+    expect(trackAccepts(tracks[0]!, media, [video])).toBe(true);
+    expect(trackAccepts(tracks[1]!, media, [video])).toBe(true);
+    expect(trackAccepts(tracks[3]!, media, [video])).toBe(false);
+    expect(trackAccepts(tracks[0]!, { ...media, assetId: "s" }, [sound])).toBe(false);
+    expect(trackAccepts(tracks[3]!, text, [])).toBe(true);
+    expect(trackAccepts(tracks[0]!, text, [])).toBe(false);
+  });
+
+  it("finds the next track that can take the clip", () => {
+    expect(neighbourTrack(tracks, media, 1, [video])?.id).toBe("m");
+    expect(neighbourTrack(tracks, media, -1, [video])).toBeUndefined();
+    expect(neighbourTrack(tracks, text, 1, [])).toBeUndefined();
+  });
+
+  it("trims text without any limit from a source", () => {
+    expect(resolveTrim(text, undefined, [], "end", 500)).toEqual({ start: 0, duration: 500 });
   });
 });

@@ -117,7 +117,7 @@ Tất cả biến nằm trong một file duy nhất, `tokens.css`. Giao diện d
   --size-ruler: 28px;
   --size-track: 56px;
   --size-track-audio: 40px;
-  --size-track-label: 72px;
+  --size-track-label: 112px;
   --size-trim-handle: 8px;
   --size-thumb-width: 72px;
   --size-thumb-height: 44px;
@@ -159,19 +159,47 @@ Cần giá trị mới thì thêm biến vào `tokens.css`, không viết trực
 - **Màu xanh dương là của người dùng, màu cam là của agent.** Hai màu này không dùng cho mục đích khác.
 - Clip agent vừa sửa có viền cam.
 - Sau khi agent sửa, một dải thông báo trên timeline nói rõ đã đổi gì và có nút hoàn tác cả lô đó.
-- Tab Hoạt động ghi rõ từng thay đổi do ai thực hiện.
+- Dải thông báo gộp các lô agent sửa mà người dùng chưa xem, hiện lô mới nhất và số lô còn lại. Viền cam giữ tới khi bấm "Đã xem", và lần sau mở project vẫn còn nếu chưa xem.
+- Tab Hoạt động ghi rõ từng thay đổi do ai thực hiện, và lô của agent còn hiệu lực có nút hoàn tác riêng.
+- Hoàn tác riêng một lô giữ nguyên các thay đổi sau đó. Nếu một thay đổi sau đã sửa cùng clip thì báo rõ và không đổi gì.
+- Thanh trên cùng hiện trạng thái agent: đang làm việc, đã kết nối, không hoạt động hoặc chưa có. Nếu mất kết nối tới server thì hiện thông báo này thay cho trạng thái agent.
+- Thao tác của người dùng gặp revision cũ sẽ tự gửi lại trên timeline mới nhất. Chỉ báo lỗi khi không thể áp dụng được nữa. Riêng Hoàn tác và Làm lại không tự gửi lại, vì khi đó chúng sẽ tác động lên một thay đổi khác.
 - Không chỉ dựa vào màu: luôn kèm chữ hoặc biểu tượng.
 
 ### Trạng thái
 
 - Thư viện hiển thị trạng thái xử lý và tiến độ của từng video.
+- Tạo transcript chỉ chạy khi người dùng hoặc agent yêu cầu, vì mất nhiều thời gian. Tab Transcript hiện tiến độ của từng video.
 - Trước khi đổi fps, phải cảnh báo nếu video có thể bị giật.
 - Việc lâu phải có tiến độ và không chặn thao tác khác.
 - Thông báo lỗi nói rõ chuyện gì đã xảy ra và cách xử lý.
 - Thiết kế đủ các trạng thái: rỗng, đang tải, lỗi, không có quyền thao tác.
 
+### Transcript
+
+- Tab Transcript hiện lời nói đúng theo timeline hiện tại: phần đã cắt không còn trong danh sách.
+- Bấm một từ để đưa playhead tới đó và chọn từ đó. Shift và bấm để chọn cả đoạn. Khi đang phát, từ đang nói có gạch chân.
+- Bàn phím: mũi tên trái, phải đi giữa các từ, thêm Shift để chọn, Enter để đến từ đó, Delete để xóa và dồn đoạn đã chọn, Esc để bỏ chọn.
+- Từ có thể là từ thừa có gạch chân chấm kèm tooltip. Đây chỉ là gợi ý, không tự xóa.
+- Xóa từ là một thao tác sửa bình thường: thành một lô trong Hoạt động và Hoàn tác được.
+
+### Nhiều track
+
+- Track sau vẽ đè lên track trước. Timeline hiện track trên cùng ở trên cùng, nhãn track nằm bên trái.
+- Chỉ track video đầu tiên có hàng tiếng riêng, vì đây là nơi có lời nói. Transcript và phụ đề đọc từ track này.
+- Kéo clip lên, xuống để đổi track. Phím thay thế là ⌥↑ và ⌥↓. Clip chỉ vào được track phát được nó: video vào track video, âm thanh vào track âm thanh, chữ vào track chữ.
+- Bản xem trước hiện đúng các lớp, vị trí, độ mờ và transition như bản xuất. Chữ trên preview dùng chính hình mà bản xuất vẽ.
+
+### Thuộc tính của clip
+
+- X, Y tính bằng phần trăm khung hình, từ tâm. Thu phóng 100% là cỡ vừa khung.
+- Mỗi thuộc tính có thể đổi theo thời gian có nút hình thoi: bấm để đặt hoặc bỏ keyframe tại playhead. Khi đã có keyframe, kéo thanh trượt sẽ đặt keyframe tại playhead.
+- Transition nằm trên clip phía sau của điểm cắt và không đổi độ dài timeline. Nếu không đủ đoạn dư để hòa tan thì nói rõ là clip chỉ hiện dần.
+- Khi chưa chọn clip, panel Thuộc tính cho đổi khung hình của project.
+
 ### Hành động
 
+- Việc đang chạy có nút Hủy. Hủy xong không để lại file dở.
 - Thao tác sửa được undo nên không cần hỏi xác nhận. Chỉ hỏi với việc không hoàn tác được.
 - Mọi thao tác chính trên timeline phải có phím tắt.
 
@@ -186,7 +214,11 @@ Cần giá trị mới thì thêm biến vào `tokens.css`, không viết trực
 | Xuất video | Export |
 | Bám điểm cắt | Snap |
 | Hoạt động | Lịch sử thay đổi |
+| Lô | Một nhóm thay đổi được áp dụng và hoàn tác cùng nhau |
 | Xóa và dồn | Xóa clip rồi kéo các clip phía sau lên |
+| Khung hình | Kích thước và tỉ lệ của video |
+| Hòa tan, Mờ qua đen | Hai loại transition |
+| Vừa khung, Lấp đầy khung | Hiện cả hình, hoặc phủ kín khung và cắt phần thừa |
 
 ## 7. Thư viện component
 
@@ -194,7 +226,7 @@ Danh sách này được chốt khi bắt đầu Phase 2. Bất kỳ thư viện
 
 | Nhu cầu | Thư viện | Trạng thái |
 |---|---|---|
-| Dialog, slider, tooltip, toast, progress | Radix UI Primitives (`radix-ui`) | Đã chốt |
+| Dialog, slider, tooltip, toast, progress, tabs, select | Radix UI Primitives (`radix-ui`) | Đã chốt |
 | Biểu tượng | `lucide-react` | Đã chốt |
 | Font | `@fontsource/be-vietnam-pro`, chạy được khi không có mạng | Đã chốt |
 | Style | CSS Modules kèm `tokens.css` | Đã chốt |
@@ -211,7 +243,9 @@ Danh sách này được chốt khi bắt đầu Phase 2. Bất kỳ thư viện
 
 Timeline tự viết dùng Pointer Events và biến CSS, phần tính toán nằm riêng trong `timelineOps.ts` để có unit test.
 
-**Preview** (`web/src/editor/player.ts`). Player public như Video.js phát một nguồn. Dự án cần phát nhiều clip nối nhau theo đúng frame của timeline, nên dùng hai thẻ `<video>` thay phiên, thẻ chờ được seek sẵn tới clip kế tiếp.
+**Preview** (`web/src/editor/player.ts`). Player public như Video.js phát một nguồn. Dự án cần phát nhiều clip nối nhau theo đúng frame của timeline, nên dùng hai thẻ `<video>` thay phiên, thẻ chờ được seek sẵn tới clip kế tiếp. Các track khác và đoạn dư của transition chạy trên thẻ `<video>` riêng, tạo khi cần và bám theo playhead của track chính.
+
+**Chữ trong video** (`src/media/text.ts`). FFmpeg đang dùng không có `drawtext`, nên server vẽ chữ thành PNG bằng `@napi-rs/canvas` với font Be Vietnam Pro. Preview và bản xuất dùng chung PNG này.
 
 ## 8. Accessibility
 

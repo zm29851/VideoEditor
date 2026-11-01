@@ -1,9 +1,11 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Asset, Project } from "../schema.ts";
+import { isMediaClip, type Asset, type Project } from "../schema.ts";
 import { framesToSeconds } from "../time.ts";
+import { buildPreviewProject, buildRenderGraph } from "./export.ts";
 import { ffmpeg } from "./ffmpeg.ts";
+import { textImagesFor } from "./text.ts";
 
 export type FrameSource = { kind: "timeline" } | { kind: "asset"; assetId: string };
 
@@ -40,6 +42,7 @@ export async function extractFrame(project: Project, source: FrameSource, frame:
   if (source.kind === "asset") {
     const asset = project.assets.find((candidate) => candidate.id === source.assetId);
     if (!asset) throw new Error(`Không có asset "${source.assetId}".`);
+    if (!asset.hasVideo) throw new Error(`"${asset.name}" chỉ có tiếng, không có hình để xem.`);
     if (frame >= asset.durationFrames) {
       throw new Error(`Asset "${asset.name}" chỉ có ${asset.durationFrames} frame, không có frame ${frame}.`);
     }
@@ -52,8 +55,11 @@ export async function extractFrame(project: Project, source: FrameSource, frame:
   const end = clips.reduce((value, clip) => Math.max(value, clip.start + clip.duration), 0);
   if (frame >= end) throw new Error(`Timeline dài ${end} frame, không có frame ${frame}.`);
 
-  const clip = clips.find((candidate) => frame >= candidate.start && frame < candidate.start + candidate.duration);
-  if (!clip) {
+  const showing = project.timeline.tracks
+    .filter((track) => track.kind !== "audio")
+    .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
+    .filter(({ clip }) => frame >= clip.start && frame < clip.start + clip.duration);
+  if (showing.length === 0) {
     const { stdout } = await ffmpeg([
       "-f",
       "lavfi",
@@ -63,9 +69,20 @@ export async function extractFrame(project: Project, source: FrameSource, frame:
     ]);
     return stdout;
   }
-  const asset = project.assets.find((candidate) => candidate.id === clip.assetId);
-  if (!asset) throw new Error(`Clip "${clip.id}" dùng asset không tồn tại.`);
-  return assetFrame(project, asset, clip.sourceIn + frame - clip.start, size.width, size.height);
+  const only = showing.length === 1 ? showing[0]!.clip : undefined;
+  const plain = only && isMediaClip(only) && !only.fit && !only.keyframes && !only.transitionIn && !only.transform;
+  const neighbourFades = showing.length === 1 && showing[0]!.track.clips.some((clip) => clip.transitionIn);
+  if (only && isMediaClip(only) && plain && !neighbourFades) {
+    const asset = project.assets.find((candidate) => candidate.id === only.assetId);
+    if (!asset) throw new Error(`Clip "${only.id}" dùng asset không tồn tại.`);
+    return assetFrame(project, asset, only.sourceIn + frame - only.start, size.width, size.height);
+  }
+  // Layers or effects on this frame: render it the way the export would.
+  const small = buildPreviewProject(project, Math.max(size.width, size.height));
+  const textImages = textImagesFor(small, join(tmpdir(), "ve-text"));
+  const graph = buildRenderGraph(small, { range: { start: frame, end: frame + 1 }, textImages, audio: false });
+  const { stdout } = await ffmpeg([...graph.inputs, "-filter_complex", `${graph.filters.join(";")};[outv]format=yuvj420p[jpeg]`, "-map", "[jpeg]", ...JPEG_ARGS]);
+  return stdout;
 }
 
 export interface Filmstrip {

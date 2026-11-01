@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Asset, FrameRate } from "../schema.ts";
 import { projectPaths } from "../store.ts";
 import { AUDIO_SAMPLE_RATE, fpsToFilterString, fpsToNumber } from "../time.ts";
 import { ffmpeg, ffmpegWithProgress } from "./ffmpeg.ts";
 import { writeHdrLut } from "./hdr.ts";
-import { probeMedia, type MediaInfo } from "./probe.ts";
+import { probeAudio, probeMedia, type MediaInfo } from "./probe.ts";
 
 /** 29.97 and 30 differ by 0.1%, so anything near that is a different rate. */
 const FPS_TOLERANCE = 0.0005;
@@ -25,6 +26,14 @@ export function normalizationReasons(info: MediaInfo, fps: FrameRate): string[] 
   if (info.isHdr) reasons.push(`HDR (${info.colorTransfer}) cần chuyển về SDR`);
   if (info.pixelFormat !== "yuv420p" && info.pixelFormat !== "yuvj420p") {
     reasons.push(`định dạng điểm ảnh ${info.pixelFormat}`);
+  }
+  // Everything after import reads the first audio stream, so a master must put the readable one there.
+  if (info.skippedAudioCodec) {
+    reasons.push(
+      info.hasAudio
+        ? `âm thanh ${info.skippedAudioCodec} chưa đọc được, dùng luồng âm thanh thường đi kèm`
+        : `âm thanh ${info.skippedAudioCodec} chưa đọc được, video sẽ không có tiếng`,
+    );
   }
   if (info.hasAudio && info.audioSampleRate !== AUDIO_SAMPLE_RATE) {
     reasons.push(`âm thanh ${info.audioSampleRate} Hz, cần ${AUDIO_SAMPLE_RATE} Hz`);
@@ -59,8 +68,8 @@ function masterVideoArgs(options: VideoEncoderOptions): string[] {
     : ["-c:v", "h264_videotoolbox", "-b:v", "20M"];
 }
 
-function runFfmpeg(onFrame: ((frame: number) => void) | undefined, args: string[]): Promise<unknown> {
-  return onFrame ? ffmpegWithProgress(args, onFrame) : ffmpeg(args);
+function runFfmpeg(onFrame: ((frame: number) => void) | undefined, args: string[], signal?: AbortSignal): Promise<unknown> {
+  return onFrame ? ffmpegWithProgress(args, onFrame, signal) : ffmpeg(args, signal);
 }
 
 export async function createMaster(
@@ -71,6 +80,7 @@ export async function createMaster(
   lutDir: string,
   options: VideoEncoderOptions = { encoder: "libx264" },
   onFrame?: (frame: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const filters: string[] = [];
   if (info.isHdr) {
@@ -90,8 +100,7 @@ export async function createMaster(
     source,
     "-map",
     "0:v:0",
-    "-map",
-    "0:a:0?",
+    ...(info.audioIndex === undefined ? [] : ["-map", `0:a:${info.audioIndex}`]),
     "-map_metadata",
     "-1",
     "-vf",
@@ -114,7 +123,7 @@ export async function createMaster(
     "-movflags",
     "+faststart",
     output,
-  ]);
+  ], signal);
 }
 
 export async function createProxy(
@@ -122,6 +131,7 @@ export async function createProxy(
   output: string,
   fps: FrameRate,
   onFrame?: (frame: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const gop = Math.max(1, Math.round(fpsToNumber(fps) / 2));
   await runFfmpeg(onFrame, [
@@ -150,7 +160,7 @@ export async function createProxy(
     "-movflags",
     "+faststart",
     output,
-  ]);
+  ], signal);
 }
 
 export interface ImportTimings {
@@ -178,6 +188,7 @@ export async function importVideo(
   fps: FrameRate,
   options?: VideoEncoderOptions,
   onProgress?: (progress: ImportProgress) => void,
+  signal?: AbortSignal,
 ): Promise<ImportResult> {
   const paths = projectPaths(projectRoot);
   const id = `asset_${randomUUID().slice(0, 8)}`;
@@ -187,24 +198,29 @@ export async function importVideo(
   const outputFrames = Math.max(1, Math.round((info.frameCount * fpsToNumber(fps)) / info.averageFps));
   const proxyStartPercent = reasons.length > 0 ? MASTER_SHARE : 0;
 
+  const created = (path: string) => () => rmSync(path, { force: true });
+  const cleanups: Array<() => void> = [];
+  try {
   const masterStart = performance.now();
   let masterPath = source;
   if (reasons.length > 0) {
     masterPath = join(paths.masters, `${id}.mp4`);
+    cleanups.push(created(masterPath));
     await createMaster(source, masterPath, info, fps, paths.cache, options, (frame) =>
       onProgress?.({ stage: "Đang chuẩn hóa video", percent: (frame / outputFrames) * MASTER_SHARE }),
-    );
+    signal);
   }
   const masterSeconds = (performance.now() - masterStart) / 1000;
 
   const proxyStart = performance.now();
   const proxyPath = join(paths.proxies, `${id}.mp4`);
+  cleanups.push(created(proxyPath));
   await createProxy(masterPath, proxyPath, fps, (frame) =>
     onProgress?.({
       stage: "Đang tạo proxy",
       percent: proxyStartPercent + (frame / outputFrames) * (99 - proxyStartPercent),
     }),
-  );
+  signal);
   const proxySeconds = (performance.now() - proxyStart) / 1000;
 
   const master = reasons.length > 0 ? await probeMedia(masterPath) : info;
@@ -223,6 +239,7 @@ export async function importVideo(
       durationFrames: master.frameCount,
       width: master.width,
       height: master.height,
+      hasVideo: true,
       hasAudio: master.hasAudio,
       normalization: {
         transcoded: reasons.length > 0,
@@ -232,5 +249,49 @@ export async function importVideo(
       },
     },
     timings: { masterSeconds, proxySeconds },
+  };
+  } catch (error) {
+    // A half-written file must not stay behind after a failure or a cancel.
+    for (const cleanup of cleanups) cleanup();
+    throw error;
+  }
+}
+
+/** A sound file, such as music. One AAC file at the project's sample rate serves as both master and proxy. */
+export async function importAudio(
+  projectRoot: string,
+  source: string,
+  fps: FrameRate,
+  onProgress?: (progress: ImportProgress) => void,
+  signal?: AbortSignal,
+): Promise<ImportResult> {
+  const paths = projectPaths(projectRoot);
+  const id = `asset_${randomUUID().slice(0, 8)}`;
+  onProgress?.({ stage: "Đang đọc thông tin âm thanh", percent: 0 });
+  const { seconds } = await probeAudio(source);
+  const path = join(paths.masters, `${id}.m4a`);
+  const start = performance.now();
+  onProgress?.({ stage: "Đang chuẩn hóa âm thanh", percent: 1 });
+  try {
+    await ffmpeg(["-i", source, "-map", "0:a:0", "-vn", "-map_metadata", "-1", "-af", `aresample=${AUDIO_SAMPLE_RATE}:async=1:first_pts=0`, "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", path], signal);
+  } catch (error) {
+    rmSync(path, { force: true });
+    throw error;
+  }
+  return {
+    asset: {
+      id,
+      name: basename(source),
+      originalPath: source,
+      masterPath: path,
+      proxyPath: path,
+      durationFrames: Math.max(1, Math.floor(seconds * fpsToNumber(fps))),
+      width: 0,
+      height: 0,
+      hasVideo: false,
+      hasAudio: true,
+      normalization: { transcoded: true, reasons: [`âm thanh chuẩn hóa về ${AUDIO_SAMPLE_RATE} Hz`], sourceFps: fpsToNumber(fps), wasHdr: false },
+    },
+    timings: { masterSeconds: (performance.now() - start) / 1000, proxySeconds: 0 },
   };
 }

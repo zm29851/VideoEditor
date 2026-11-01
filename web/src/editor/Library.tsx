@@ -1,4 +1,4 @@
-import { ChevronLeft, Folder, Plus, TriangleAlert, Upload, Video, X } from "lucide-react";
+import { ChevronLeft, Folder, Music, Plus, TriangleAlert, Upload, Video, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { frameToTimecode } from "../../../src/time.ts";
 import { api, urls, type ImportCheck, type Job, type MediaListing } from "../api.ts";
@@ -13,7 +13,7 @@ export const assetDrag: { assetId?: string } = {};
 const THUMBNAIL_FRAME = 15;
 
 function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const { projectId, refreshStatus } = useEditor();
+  const { projectId } = useEditor();
   const [path, setPath] = useState<string>();
   const [listing, setListing] = useState<MediaListing>();
   const [error, setError] = useState<string>();
@@ -42,7 +42,6 @@ function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
     setError(undefined);
     try {
       await api.startImport(projectId, videoPath);
-      refreshStatus();
       setCheck(undefined);
       onOpenChange(false);
     } catch (caught) {
@@ -68,8 +67,8 @@ function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
       open={open}
       onOpenChange={onOpenChange}
       wide
-      title="Thêm video từ máy"
-      description="File gốc không bị sửa. Chỉ hiện thư mục và video."
+      title="Thêm video hoặc âm thanh từ máy"
+      description="File gốc không bị sửa. Chỉ hiện thư mục, video và file âm thanh."
     >
       {check ? (
         <div className={styles.importWarning} role="alert">
@@ -102,7 +101,7 @@ function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
             </Button>
           )}
           {listing && listing.entries.length === 0 && (
-            <EmptyState title={listing.path ? "Thư mục này không có video" : "Chưa có thư mục nào được phép"}>
+            <EmptyState title={listing.path ? "Thư mục này không có video hay âm thanh" : "Chưa có thư mục nào được phép"}>
               {!listing.path && <p>Đặt biến môi trường VE_MEDIA_DIRS rồi khởi động lại server.</p>}
             </EmptyState>
           )}
@@ -116,7 +115,7 @@ function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
                     disabled={checking !== undefined}
                     onClick={() => (entry.kind === "dir" ? setPath(entry.path) : void choose(entry.path))}
                   >
-                    {entry.kind === "dir" ? <Folder size={18} aria-hidden /> : <Video size={18} aria-hidden />}
+                    {entry.kind === "dir" ? <Folder size={18} aria-hidden /> : entry.kind === "audio" ? <Music size={18} aria-hidden /> : <Video size={18} aria-hidden />}
                     <span className={styles.ellipsis}>{entry.name}</span>
                     {checking === entry.path && <span className={styles.muted}>Đang kiểm tra...</span>}
                     {entry.sizeBytes !== undefined && checking !== entry.path && (
@@ -134,7 +133,7 @@ function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   );
 }
 
-function ImportRow({ job, onDismiss }: { job: Job; onDismiss: () => void }) {
+function ImportRow({ job, onDismiss, onCancel }: { job: Job; onDismiss: () => void; onCancel: () => void }) {
   if (job.status === "failed") {
     return (
       <li className={styles.libraryFailed} role="alert">
@@ -151,7 +150,12 @@ function ImportRow({ job, onDismiss }: { job: Job; onDismiss: () => void }) {
   }
   return (
     <li className={styles.libraryProgress}>
-      <span className={styles.ellipsis}>{job.label}</span>
+      <div className={styles.jobLine}>
+        <span className={styles.ellipsis}>{job.label}</span>
+        <IconButton label={`Hủy import ${job.label ?? ""}`} onClick={onCancel}>
+          <X size={16} aria-hidden />
+        </IconButton>
+      </div>
       <span className={styles.muted}>
         {job.status === "queued" ? "Đang chờ tới lượt" : (job.stage ?? "Đang xử lý")}
         {job.progress !== undefined && job.status === "running" ? ` · ${job.progress}%` : ""}
@@ -165,43 +169,49 @@ export function Library() {
   const { project, projectId, jobs, addAsset } = useEditor();
   const [importing, setImporting] = useState(false);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const report = (caught: unknown) => toast(caught instanceof Error ? caught.message : "Không thực hiện được.");
   const toast = useToast();
-  const imports = jobs.filter((job) => job.type === "import" && job.status !== "succeeded" && !dismissed.has(job.id));
+  const imports = jobs.filter((job) => job.type === "import" && job.status !== "succeeded" && job.status !== "cancelled" && !dismissed.has(job.id));
   const isEmpty = project.assets.length === 0 && imports.length === 0;
 
   return (
-    <section className={styles.panelLeft} aria-label="Thư viện">
-      <div className={styles.panelHeader}>
-        <h2 className={styles.panelTitle}>Thư viện</h2>
-      </div>
-      <div className={styles.panelBody}>
-        <Button onClick={() => setImporting(true)} className={styles.fullWidth}>
-          <Upload size={18} aria-hidden />
-          Thêm video từ máy
-        </Button>
-        {isEmpty ? (
-          <EmptyState title="Thư viện đang trống">
-            <p>Thêm video để bắt đầu dựng.</p>
-          </EmptyState>
-        ) : (
-          <ul className={styles.library}>
-            {imports.map((job) => (
-              <ImportRow key={job.id} job={job} onDismiss={() => setDismissed((set) => new Set(set).add(job.id))} />
-            ))}
-            {project.assets.map((asset) => (
-              <li
-                key={asset.id}
-                className={styles.libraryItem}
-                draggable
-                onDragStart={(event) => {
-                  assetDrag.assetId = asset.id;
-                  event.dataTransfer.setData(ASSET_DRAG_TYPE, asset.id);
-                  event.dataTransfer.effectAllowed = "copy";
-                }}
-                onDragEnd={() => {
-                  delete assetDrag.assetId;
-                }}
-              >
+    <>
+      <Button onClick={() => setImporting(true)} className={styles.fullWidth}>
+        <Upload size={18} aria-hidden />
+        Thêm video hoặc âm thanh
+      </Button>
+      {isEmpty ? (
+        <EmptyState title="Thư viện đang trống">
+          <p>Thêm video để bắt đầu dựng. Nhạc nền cũng thêm ở đây.</p>
+        </EmptyState>
+      ) : (
+        <ul className={styles.library}>
+          {imports.map((job) => (
+            <ImportRow
+              key={job.id}
+              job={job}
+              onCancel={() => void api.cancelJob(projectId, job.id).catch(report)}
+              onDismiss={() => {
+                setDismissed((set) => new Set(set).add(job.id));
+                void api.dismissJob(projectId, job.id).catch(report);
+              }}
+            />
+          ))}
+          {project.assets.map((asset) => (
+            <li
+              key={asset.id}
+              className={styles.libraryItem}
+              draggable
+              onDragStart={(event) => {
+                assetDrag.assetId = asset.id;
+                event.dataTransfer.setData(ASSET_DRAG_TYPE, asset.id);
+                event.dataTransfer.effectAllowed = "copy";
+              }}
+              onDragEnd={() => {
+                delete assetDrag.assetId;
+              }}
+            >
+              {asset.hasVideo ? (
                 <img
                   className={styles.thumb}
                   src={urls.thumbnail(projectId, asset.id, Math.min(THUMBNAIL_FRAME, asset.durationFrames - 1))}
@@ -212,31 +222,35 @@ export function Library() {
                     event.currentTarget.hidden = true;
                   }}
                 />
-                <div className={styles.libraryText}>
-                  <span className={styles.ellipsis} title={asset.name}>{asset.name}</span>
-                  <span className={styles.timecode}>{frameToTimecode(asset.durationFrames, project.fps)}</span>
-                  {asset.normalization.transcoded && (
-                    <span className={styles.muted} title={asset.normalization.reasons.join("; ")}>Đã chuẩn hóa</span>
-                  )}
-                </div>
-                <IconButton
-                  label={`Thêm ${asset.name} vào cuối timeline`}
-                  onClick={() => {
-                    try {
-                      addAsset(asset);
-                    } catch (error) {
-                      toast(error instanceof Error ? error.message : "Không thêm được clip.");
-                    }
-                  }}
-                >
-                  <Plus size={18} aria-hidden />
-                </IconButton>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+              ) : (
+                <span className={styles.libraryIcon}>
+                  <Music size={20} aria-hidden />
+                </span>
+              )}
+              <div className={styles.libraryText}>
+                <span className={styles.ellipsis} title={asset.name}>{asset.name}</span>
+                <span className={styles.timecode}>{frameToTimecode(asset.durationFrames, project.fps)}</span>
+                {asset.normalization.transcoded && (
+                  <span className={styles.muted} title={asset.normalization.reasons.join("; ")}>Đã chuẩn hóa</span>
+                )}
+              </div>
+              <IconButton
+                label={`Thêm ${asset.name} vào cuối timeline`}
+                onClick={() => {
+                  try {
+                    addAsset(asset);
+                  } catch (error) {
+                    toast(error instanceof Error ? error.message : "Không thêm được clip.");
+                  }
+                }}
+              >
+                <Plus size={18} aria-hidden />
+              </IconButton>
+            </li>
+          ))}
+        </ul>
+      )}
       {importing && <ImportDialog open onOpenChange={setImporting} />}
-    </section>
+    </>
   );
 }

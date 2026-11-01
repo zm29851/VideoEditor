@@ -2,16 +2,18 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename, join } from "node:path";
 import { z, ZodError } from "zod";
+import { FrameRate, isMediaClip } from "../schema.ts";
 import { CommandError } from "../commands.ts";
 import { StaleRevisionError, type CommandEngine } from "../engine.ts";
 import { timelineDuration } from "../media/export.ts";
 import { extractFrame } from "../media/frames.ts";
 import { judderWarning, normalizationReasons } from "../media/import.ts";
 import { loadPeaks } from "../media/peaks.ts";
-import { probeMedia } from "../media/probe.ts";
+import { probeAudio, probeMedia } from "../media/probe.ts";
+import { textImagePath } from "../media/text.ts";
 import { projectPaths } from "../store.ts";
 import { fpsToNumber } from "../time.ts";
-import type { Workspace } from "../mcp/workspace.ts";
+import { isAudioFile, type Workspace } from "../mcp/workspace.ts";
 import { sendFile } from "./static.ts";
 
 const ACTOR = "user";
@@ -31,8 +33,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** The whole state the editor needs after any change, so it never has to guess what changed. */
-function projectState(engine: CommandEngine): object {
-  return { project: engine.project, undoLabel: engine.undoLabel, redoLabel: engine.redoLabel };
+export function projectState(engine: CommandEngine): object {
+  return { project: engine.project, undoLabel: engine.undoLabel, redoLabel: engine.redoLabel, activity: engine.activity() };
 }
 
 const CreateProject = z.object({
@@ -40,6 +42,7 @@ const CreateProject = z.object({
   name: z.string().trim().min(1).max(100),
   width: z.number().int().positive().max(7680),
   height: z.number().int().positive().max(7680),
+  fps: FrameRate.refine((fps) => fps.num / fps.den >= 1 && fps.num / fps.den <= 120, "fps phải từ 1 đến 120").optional(),
 });
 const Batch = z.object({
   baseRevision: z.number().int().nonnegative(),
@@ -47,8 +50,10 @@ const Batch = z.object({
   commands: z.array(z.unknown()),
 });
 const Revision = z.object({ baseRevision: z.number().int().nonnegative() });
+const Revert = z.object({ baseRevision: z.number().int().nonnegative(), revision: z.number().int().positive() });
 const MediaPath = z.object({ path: z.string().min(1) });
 const ExportRequest = z.object({ name: z.string() });
+const TranscribeRequest = z.object({ language: z.string() });
 
 function engineOf(workspace: Workspace, projectId: string): CommandEngine {
   try {
@@ -104,7 +109,7 @@ async function route(
     if (method === "POST") {
       const body = CreateProject.parse(await readBody());
       if (workspace.list().includes(body.id)) throw new ApiError(409, `Đã có project "${body.id}".`);
-      const engine = workspace.create(body.id, { name: body.name, width: body.width, height: body.height });
+      const engine = workspace.create(body.id, { name: body.name, width: body.width, height: body.height, ...(body.fps ? { fps: body.fps } : {}) });
       return sendJson(res, 201, { id: body.id, ...projectState(engine) });
     }
   }
@@ -138,11 +143,20 @@ async function route(
       case "redo":
         engine.redo(ACTOR, Revision.parse(await readBody()).baseRevision);
         return sendJson(res, 200, projectState(engine));
+      case "revert": {
+        const body = Revert.parse(await readBody());
+        engine.revert(ACTOR, body.baseRevision, body.revision);
+        return sendJson(res, 200, projectState(engine));
+      }
       case "import":
         if (parts[3] === "check") {
           const source = workspace.resolveMediaPath(MediaPath.parse(await readBody()).path);
-          const info = await probeMedia(source);
           const { fps } = engine.project;
+          if (isAudioFile(source)) {
+            await probeAudio(source);
+            return sendJson(res, 200, { name: basename(source), path: source, width: 0, height: 0, sourceFps: fpsToNumber(fps), projectFps: fpsToNumber(fps), reasons: [] });
+          }
+          const info = await probeMedia(source);
           return sendJson(res, 200, {
             name: basename(source),
             path: source,
@@ -157,6 +171,21 @@ async function route(
         return sendJson(res, 202, workspace.startImport(projectId, MediaPath.parse(await readBody()).path));
       case "export":
         return sendJson(res, 202, workspace.startExport(projectId, ExportRequest.parse(await readBody()).name));
+      case "jobs":
+        if (parts.length === 5 && workspace.jobs.get(parts[3]!)?.projectId === projectId) {
+          if (parts[4] === "cancel") return sendJson(res, 200, workspace.jobs.cancel(parts[3]!));
+          if (parts[4] === "dismiss") {
+            workspace.jobs.dismiss(parts[3]!);
+            return sendJson(res, 200, {});
+          }
+        }
+        break;
+      case "assets":
+        if (parts.length === 5 && parts[4] === "transcribe") {
+          const asset = assetOf(engine, parts[3]!);
+          return sendJson(res, 202, workspace.startTranscribe(projectId, asset.id, TranscribeRequest.parse(await readBody()).language));
+        }
+        break;
     }
   }
 
@@ -170,6 +199,15 @@ async function route(
       return sendFile(req, res, path, { downloadName: name });
     }
 
+    // The picture of a text clip, the same one the export draws. Stored by content, so it can be cached.
+    if (action === "clips" && parts.length === 5 && parts[4] === "text-image") {
+      const { project } = engine;
+      const clip = project.timeline.tracks.flatMap((track) => track.clips).find((candidate) => candidate.id === parts[3]);
+      if (!clip || isMediaClip(clip)) throw new ApiError(404, `Không có clip chữ "${parts[3]}".`);
+      const { cache } = projectPaths(workspace.projectRoot(projectId));
+      return sendFile(req, res, textImagePath(join(cache, "text"), clip, project.width, project.height), { cacheControl: "private, max-age=86400" });
+    }
+
     if (action === "assets" && parts.length === 5) {
       const asset = assetOf(engine, parts[3]!);
       const { cache } = projectPaths(workspace.projectRoot(projectId));
@@ -178,7 +216,10 @@ async function route(
           return sendFile(req, res, asset.proxyPath);
         case "peaks":
           return sendJson(res, 200, await loadPeaks(cache, asset, engine.project.fps));
+        case "transcript":
+          return sendJson(res, 200, { transcript: workspace.transcript(projectId, asset.id) ?? null });
         case "thumbnail": {
+          if (!asset.hasVideo) throw new ApiError(404, `"${asset.name}" chỉ có tiếng, không có hình.`);
           const frame = Number(url.searchParams.get("frame") ?? 0);
           if (!Number.isInteger(frame) || frame < 0 || frame >= asset.durationFrames) {
             throw new ApiError(400, `Video "${asset.name}" không có frame ${url.searchParams.get("frame")}.`);

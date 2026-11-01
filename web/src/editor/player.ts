@@ -1,4 +1,5 @@
-import type { Clip, FrameRate } from "../../../src/schema.ts";
+import { gainAt, lookAt, tailGainAt, trackEnvelopes, type ClipEnvelope } from "../../../src/animation.ts";
+import { isMediaClip, type Asset, type Clip, type FrameRate, type MediaClip, type Track } from "../../../src/schema.ts";
 import { clipAt, clipEnd, frameAtTime, seekTimeForFrame, timelineEnd } from "./timelineOps.ts";
 
 /** How long before a cut the next clip is loaded and seeked, in seconds. */
@@ -7,6 +8,10 @@ const PREPARE_AHEAD = 2;
 const SWITCH_MARGIN = 1 / 120;
 /** Closer than this to a cut, a timer takes over: animation frames slow down when the machine is busy. */
 const CUT_TIMER_WINDOW = 0.3;
+/** A layer further off than this while playing is put back. Any closer and the correction shows more than the drift. */
+const LAYER_DRIFT_SECONDS = 0.1;
+/** Each track gets a band of stacking positions, so a dissolve's tail sits under the clip fading in. */
+const Z_PER_TRACK = 10;
 
 interface Deck {
   video: HTMLVideoElement;
@@ -15,6 +20,18 @@ interface Deck {
   pendingTime?: number;
   seeking: boolean;
   gain?: GainNode;
+}
+
+/** Something other than the main deck that should be on a video element now, or soon. */
+interface LayerItem {
+  key: string;
+  clip: MediaClip;
+  sourceFrame: number;
+  /** Not on screen yet: the deck is only getting ready. */
+  standby: boolean;
+  look: { x: number; y: number; scale: number; opacity: number };
+  gain: number;
+  z: number;
 }
 
 export interface PlayerSnapshot {
@@ -26,12 +43,21 @@ export interface PlayerSnapshot {
 export class Player {
   #decks: [Deck, Deck] | undefined;
   #active = 0;
-  #clips: Clip[] = [];
+  #clips: MediaClip[] = [];
+  #tracks: Track[] = [];
+  #assets: Asset[] = [];
+  #envelopes = new Map<string, ClipEnvelope>();
+  #duration = 0;
+  #mainZ = 1;
+  #stage: HTMLElement | undefined;
+  #layerClass = "";
+  #layerDecks = new Map<string, Deck>();
+  #freeDecks: Deck[] = [];
   #fps: FrameRate = { num: 30, den: 1 };
   #proxyUrl: (assetId: string) => string = () => "";
   #frame = 0;
   #playing = false;
-  #current: Clip | undefined;
+  #current: MediaClip | undefined;
   #raf = 0;
   #cutTimer: ReturnType<typeof setTimeout> | undefined;
   #gapClock: { startedAt: number; startFrame: number } | undefined;
@@ -40,8 +66,10 @@ export class Player {
   #snapshot: PlayerSnapshot = { frame: 0, playing: false };
   onError: ((message: string) => void) | undefined;
 
-  attach(a: HTMLVideoElement, b: HTMLVideoElement, proxyUrl: (assetId: string) => string): void {
+  attach(a: HTMLVideoElement, b: HTMLVideoElement, proxyUrl: (assetId: string) => string, stage: HTMLElement): void {
     this.#proxyUrl = proxyUrl;
+    this.#stage = stage;
+    this.#layerClass = a.className;
     this.#decks = [this.#makeDeck(a), this.#makeDeck(b)];
     this.#active = 0;
     this.#showFrame();
@@ -49,10 +77,13 @@ export class Player {
 
   detach(): void {
     this.pause();
-    for (const deck of this.#decks ?? []) {
+    for (const deck of [...(this.#decks ?? []), ...this.#layerDecks.values(), ...this.#freeDecks]) {
       deck.video.removeAttribute("src");
       deck.video.load();
     }
+    for (const deck of [...this.#layerDecks.values(), ...this.#freeDecks]) deck.video.remove();
+    this.#layerDecks.clear();
+    this.#freeDecks = [];
     this.#decks = undefined;
     void this.#audio?.close();
     this.#audio = undefined;
@@ -74,13 +105,19 @@ export class Player {
   }
 
   get duration(): number {
-    return timelineEnd(this.#clips);
+    return this.#duration;
   }
 
-  /** The clips changed. Playback stops so what is on screen always matches the new timeline. */
-  setTimeline(clips: Clip[], fps: FrameRate): void {
-    const unchanged = JSON.stringify(clips) === JSON.stringify(this.#clips);
-    this.#clips = clips;
+  /** The timeline changed. Playback stops so what is on screen always matches the new timeline. */
+  setTimeline(tracks: Track[], assets: Asset[], fps: FrameRate): void {
+    const unchanged = JSON.stringify(tracks) === JSON.stringify(this.#tracks);
+    const main = tracks.find((track) => track.kind === "video");
+    this.#tracks = tracks;
+    this.#assets = assets;
+    this.#clips = (main?.clips ?? []).filter(isMediaClip);
+    this.#mainZ = (main ? tracks.indexOf(main) : 0) * Z_PER_TRACK + 1;
+    this.#duration = timelineEnd(tracks.flatMap((track) => track.clips));
+    this.#envelopes = new Map(tracks.flatMap((track) => [...trackEnvelopes(track.clips, assets)]));
     this.#fps = fps;
     if (unchanged) return;
     this.pause();
@@ -112,6 +149,7 @@ export class Player {
     void this.#audio.resume();
     this.#playing = true;
     this.#enterFrame(this.#frame);
+    this.#syncLayers();
     this.#raf = requestAnimationFrame(this.#tick);
     this.#emit();
   }
@@ -122,8 +160,118 @@ export class Player {
     cancelAnimationFrame(this.#raf);
     this.#clearCutTimer();
     this.#gapClock = undefined;
-    for (const deck of this.#decks ?? []) deck.video.pause();
+    for (const deck of [...(this.#decks ?? []), ...this.#layerDecks.values()]) deck.video.pause();
     this.#emit();
+  }
+
+  /** The tracks other than the main clip, and the part of a clip that plays on under a dissolve. */
+  #layerItems(): LayerItem[] {
+    const frame = this.#frame;
+    const fpsRate = this.#fps.num / this.#fps.den;
+    const ahead = Math.ceil(PREPARE_AHEAD * fpsRate);
+    const items: LayerItem[] = [];
+    const main = this.#tracks.find((track) => track.kind === "video");
+    this.#tracks.forEach((track, trackIndex) => {
+      if (track.kind === "text") return;
+      const clips = track.clips.filter(isMediaClip);
+      const z = trackIndex * Z_PER_TRACK + 1;
+      for (const clip of clips) {
+        const envelope = this.#envelopes.get(clip.id)!;
+        const position = frame - clip.start;
+        if (track !== main && position >= -ahead && position < clip.duration) {
+          items.push({
+            key: clip.id,
+            clip,
+            sourceFrame: clip.sourceIn + Math.max(0, position),
+            standby: position < 0,
+            look: lookAt(clip, Math.max(0, position), envelope),
+            gain: gainAt(clip, Math.max(0, position), envelope),
+            z,
+          });
+        }
+        const tail = envelope.tail;
+        if (tail && isMediaClip(tail.clip) && position >= -ahead && position < tail.frames) {
+          const tailFrame = Math.max(0, position);
+          items.push({
+            key: `${tail.clip.id}:tail`,
+            clip: tail.clip,
+            sourceFrame: tail.clip.sourceIn + tail.clip.duration + tailFrame,
+            standby: position < 0,
+            look: { ...lookAt(tail.clip, tail.clip.duration), opacity: lookAt(tail.clip, tail.clip.duration).opacity },
+            gain: tailGainAt(tail.clip, tailFrame, tail.frames),
+            z: z - 1,
+          });
+        }
+      }
+    });
+    return items;
+  }
+
+  #styleDeck(deck: Deck, clip: MediaClip, look: LayerItem["look"], z: number): void {
+    const { style, dataset } = deck.video;
+    style.setProperty("--layer-x", String(look.x));
+    style.setProperty("--layer-y", String(look.y));
+    style.setProperty("--layer-scale", String(look.scale));
+    style.setProperty("--layer-opacity", String(look.opacity));
+    style.setProperty("--layer-z", String(z));
+    dataset.fit = clip.fit ?? "contain";
+  }
+
+  /** Brings every layer in line with the current frame. Runs whenever the frame changes. */
+  #syncLayers(): void {
+    if (!this.#decks || !this.#stage) return;
+    if (this.#current) {
+      const envelope = this.#envelopes.get(this.#current.id);
+      const position = this.#frame - this.#current.start;
+      const deck = this.#decks[this.#active]!;
+      this.#styleDeck(deck, this.#current, lookAt(this.#current, position, envelope), this.#mainZ);
+      this.#setGain(deck, gainAt(this.#current, position, envelope));
+    }
+
+    const items = this.#layerItems();
+    const wanted = new Set(items.map((item) => item.key));
+    for (const [key, deck] of this.#layerDecks) {
+      if (wanted.has(key)) continue;
+      deck.video.pause();
+      deck.video.dataset.visible = "false";
+      this.#layerDecks.delete(key);
+      this.#freeDecks.push(deck);
+    }
+    for (const item of items) {
+      const deck = this.#layerDecks.get(item.key) ?? this.#takeLayerDeck(item.key);
+      const target = seekTimeForFrame(item.sourceFrame, this.#fps);
+      const off = Math.abs(deck.video.currentTime - target);
+      const frameSeconds = this.#fps.den / this.#fps.num;
+      if (deck.assetId !== item.clip.assetId || (this.#playing && !item.standby ? off > LAYER_DRIFT_SECONDS : off > frameSeconds / 2 && deck.pendingTime !== target)) {
+        this.#cue(deck, item.clip, item.sourceFrame);
+      }
+      this.#styleDeck(deck, item.clip, item.look, item.z);
+      this.#setGain(deck, item.standby ? 0 : item.gain);
+      const hasPicture = this.#assets.find((asset) => asset.id === item.clip.assetId)?.hasVideo === true;
+      deck.video.dataset.visible = String(!item.standby && hasPicture);
+      if (this.#playing && !item.standby && deck.video.paused) {
+        deck.video.play().catch(() => {
+          // A layer that cannot start stays quiet. The main clip reports problems with the file.
+        });
+      } else if (item.standby && !deck.video.paused) {
+        deck.video.pause();
+      }
+    }
+  }
+
+  #takeLayerDeck(key: string): Deck {
+    let deck = this.#freeDecks.pop();
+    if (!deck) {
+      const video = document.createElement("video");
+      video.className = this.#layerClass;
+      video.playsInline = true;
+      video.preload = "auto";
+      video.dataset.visible = "false";
+      this.#stage!.append(video);
+      deck = this.#makeDeck(video);
+    }
+    this.#layerDecks.set(key, deck);
+    return deck;
   }
 
   #makeDeck(video: HTMLVideoElement): Deck {
@@ -150,7 +298,7 @@ export class Player {
     deck.video.currentTime = time;
   }
 
-  #cue(deck: Deck, clip: Clip, sourceFrame: number): void {
+  #cue(deck: Deck, clip: MediaClip, sourceFrame: number): void {
     if (deck.assetId !== clip.assetId) {
       deck.assetId = clip.assetId;
       deck.seeking = false;
@@ -166,13 +314,13 @@ export class Player {
     }
   }
 
-  #applyVolume(deck: Deck, clip: Clip): void {
+  #setGain(deck: Deck, gain: number): void {
     if (this.#audio && !deck.gain) {
       deck.gain = this.#audio.createGain();
       this.#audio.createMediaElementSource(deck.video).connect(deck.gain).connect(this.#audio.destination);
     }
     // Same linear scale as the volume filter in export, and it can go above 100%.
-    if (deck.gain) deck.gain.gain.value = clip.volume / 100;
+    if (deck.gain) deck.gain.gain.value = gain;
   }
 
   /** Paused: put the right frame on screen, or black for a gap. */
@@ -187,6 +335,7 @@ export class Player {
     }
     this.#setVisible(deck);
     this.#cue(deck, clip, clip.sourceIn + this.#frame - clip.start);
+    this.#syncLayers();
   }
 
   /** Playing: start whatever belongs at this frame, on the active deck. */
@@ -204,12 +353,11 @@ export class Player {
     this.#startDeck(deck, clip, clip.sourceIn + frame - clip.start);
   }
 
-  #startDeck(deck: Deck, clip: Clip, sourceFrame: number): void {
+  #startDeck(deck: Deck, clip: MediaClip, sourceFrame: number): void {
     const target = seekTimeForFrame(sourceFrame, this.#fps);
     const frameSeconds = this.#fps.den / this.#fps.num;
     const ready = deck.assetId === clip.assetId && !deck.seeking && Math.abs(deck.video.currentTime - target) < frameSeconds;
     if (!ready) this.#cue(deck, clip, sourceFrame);
-    this.#applyVolume(deck, clip);
     this.#setVisible(deck);
     deck.video.play().catch((error: unknown) => {
       // A later pause or seek interrupts play on purpose. Anything else stops playback for real.
@@ -299,6 +447,7 @@ export class Player {
   }
 
   #emit(): void {
+    this.#syncLayers();
     this.#snapshot = { frame: this.#frame, playing: this.#playing };
     for (const listener of this.#listeners) listener();
   }

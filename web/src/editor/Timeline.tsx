@@ -1,12 +1,13 @@
-import { ArrowLeftToLine, Magnet, Maximize2, Scissors, Trash2, ZoomIn, ZoomOut } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
-import type { Asset, Clip, CommandInput } from "../../../src/schema.ts";
+import { ArrowLeftToLine, Blend, Bot, Check, Clapperboard, Magnet, Maximize2, Music, Scissors, Trash2, Type, Undo2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { isMediaClip, type Asset, type Clip, type CommandInput, type Track } from "../../../src/schema.ts";
 import { framesToSeconds, frameToTimecode } from "../../../src/time.ts";
 import { api, urls } from "../api.ts";
-import { IconButton, Slider, useCssVars } from "../ui/ui.tsx";
+import { Button, IconButton, Slider, useCssVars } from "../ui/ui.tsx";
+import { describeChanges } from "./agentNotice.ts";
 import { MAX_PX_PER_FRAME, MIN_PX_PER_FRAME, useEditor } from "./Editor.tsx";
 import { ASSET_DRAG_TYPE, assetDrag } from "./Library.tsx";
-import { clipEnd, cutPoints, resolveMove, resolveTrim, rulerStep, timelineEnd, type SnapOptions } from "./timelineOps.ts";
+import { clipEnd, cutPoints, resolveMove, resolveTrim, rulerStep, timelineEnd, trackAccepts, type SnapOptions } from "./timelineOps.ts";
 import { Waveform } from "./Waveform.tsx";
 import styles from "./Timeline.module.css";
 
@@ -17,13 +18,25 @@ const PLAYHEAD_MARGIN_PX = 48;
 const TAIL_SHARE = 0.25;
 const MIN_CONTENT_FRAMES = 600;
 
-type Layout = Pick<Clip, "start" | "sourceIn" | "duration">;
+type Layout = { start: number; duration: number };
 
 interface Drag {
   clipId: string;
   edge?: "start" | "end";
   layout: Layout;
+  trackId: string;
 }
+
+/** The track row under the pointer, whichever element the pointer is captured by. */
+function trackIdAt(x: number, y: number): string | undefined {
+  for (const element of document.elementsFromPoint(x, y)) {
+    const id = (element as HTMLElement).dataset?.trackId;
+    if (id) return id;
+  }
+  return undefined;
+}
+
+const TRACK_NAMES: Record<Track["kind"], string> = { video: "Hình", audio: "Âm thanh", text: "Chữ" };
 
 function usePeaks(projectId: string, assets: Asset[]): Map<string, number[]> {
   const [peaks, setPeaks] = useState(new Map<string, number[]>());
@@ -54,6 +67,7 @@ function ClipBlock({
   className,
   layout,
   selected,
+  byAgent,
   onPointerDown,
   children,
   label,
@@ -63,6 +77,7 @@ function ClipBlock({
   className: string | undefined;
   layout: Layout;
   selected: boolean;
+  byAgent: boolean;
   onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   children: React.ReactNode;
   label?: string;
@@ -72,7 +87,7 @@ function ClipBlock({
   const vars = { "--clip-start": layout.start, "--clip-duration": layout.duration };
   const buttonRef = useCssVars<HTMLButtonElement>(vars);
   const divRef = useCssVars<HTMLDivElement>(vars);
-  const shared = `${styles.clip} ${className} ${selected ? styles.selected : ""}`;
+  const shared = `${styles.clip} ${className} ${byAgent ? styles.byAgent : ""} ${selected ? styles.selected : ""}`;
   if (isButton) {
     return (
       <button
@@ -115,19 +130,62 @@ function Playhead({ scroller }: { scroller: React.RefObject<HTMLDivElement | nul
   return <div ref={ref} className={styles.playhead} aria-hidden />;
 }
 
+function TrackLabel({ track, name, removable, spaced }: { track: Track; name: string; removable: boolean; spaced: boolean }) {
+  const { dispatch } = useEditor();
+  const short = track.kind === "audio" ? styles.labelAudio : styles.labelVideo;
+  return (
+    <div className={`${short} ${spaced ? styles.labelAudioSpaced : ""}`}>
+      <span>{name}</span>
+      {removable && (
+        <IconButton label={`Xóa track ${name}`} onClick={() => void dispatch(`Xóa track ${name}`, [{ type: "remove_track", trackId: track.id }])}>
+          <X size={14} aria-hidden />
+        </IconButton>
+      )}
+    </div>
+  );
+}
+
 function Ghost({ start, duration }: { start: number; duration: number }) {
   const ref = useCssVars<HTMLDivElement>({ "--clip-start": start, "--clip-duration": duration });
   return <div ref={ref} className={styles.ghost} aria-hidden />;
 }
 
+function AgentNotice() {
+  const { unseenAgent, revertBatch, markAgentSeen } = useEditor();
+  const latest = unseenAgent[0];
+  if (!latest) return null;
+  const changes = describeChanges(latest.changes);
+  const others = unseenAgent.length - 1;
+  return (
+    <div className={styles.notice} role="status">
+      <Bot size={18} aria-hidden />
+      <p className={styles.noticeText}>
+        <strong>Agent vừa sửa:</strong> {latest.label}
+        {changes && ` (${changes})`}
+        {others > 0 && `, và ${others} lô khác`}
+      </p>
+      {latest.revertible && (
+        <Button variant="ghost" className={styles.noticeAction} onClick={() => revertBatch(latest)}>
+          <Undo2 size={16} aria-hidden />
+          Hoàn tác lô này
+        </Button>
+      )}
+      <Button variant="ghost" className={styles.noticeAction} onClick={markAgentSeen}>
+        <Check size={16} aria-hidden />
+        Đã xem
+      </Button>
+    </div>
+  );
+}
+
 export function Timeline() {
   const editor = useEditor();
-  const { project, projectId, clips, player, selectedId, select, dispatch, snap, pxPerFrame, setPxPerFrame, fitRequest } = editor;
+  const { project, projectId, clips, tracks, trackId: mainTrackId, player, selectedId, select, dispatch, snap, pxPerFrame, setPxPerFrame, fitRequest } = editor;
   const { fps } = project;
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<Drag>();
-  const [ghost, setGhost] = useState<{ start: number; duration: number }>();
+  const [ghost, setGhost] = useState<{ start: number; duration: number; trackId: string }>();
   const peaks = usePeaks(projectId, project.assets);
   const end = timelineEnd(clips);
   const contentFrames = Math.max(MIN_CONTENT_FRAMES, Math.ceil(end * (1 + TAIL_SHARE)));
@@ -182,36 +240,43 @@ export function Timeline() {
     element.addEventListener("pointercancel", up);
   };
 
-  const startClipDrag = (event: ReactPointerEvent<HTMLElement>, clip: Clip, asset: Asset) => {
+  const startClipDrag = (event: ReactPointerEvent<HTMLElement>, clip: Clip, track: Track) => {
     if (event.button !== 0) return;
     event.stopPropagation();
     const element = event.currentTarget;
     element.setPointerCapture(event.pointerId);
     select(clip.id);
     const edge = (event.target as HTMLElement).dataset.edge as "start" | "end" | undefined;
+    const asset = isMediaClip(clip) ? project.assets.find((candidate) => candidate.id === clip.assetId) : undefined;
     const originX = event.clientX;
-    const others = clips.filter((other) => other.id !== clip.id);
     const snapOptions = snapFor(clip.id);
     let moved = false;
     let layout: Layout = clip;
+    let target = track;
 
     const move = (pointer: PointerEvent) => {
       const dx = pointer.clientX - originX;
-      if (!moved && Math.abs(dx) < DRAG_THRESHOLD_PX) return;
+      const overId = edge ? undefined : trackIdAt(pointer.clientX, pointer.clientY);
+      const over = tracks.find((candidate) => candidate.id === overId);
+      const nextTarget = over && trackAccepts(over, clip, project.assets) ? over : target;
+      if (!moved && Math.abs(dx) < DRAG_THRESHOLD_PX && nextTarget === target) return;
       moved = true;
+      target = nextTarget;
+      const others = target.clips.filter((other) => other.id !== clip.id);
       const frames = Math.round(dx / pxPerFrame);
       if (edge) {
         const reference = edge === "start" ? clip.start : clipEnd(clip);
         layout = resolveTrim(clip, asset, others, edge, reference + frames, snapOptions);
       } else {
-        layout = { ...clip, start: resolveMove(others, clip.duration, clip.start + frames, snapOptions) };
+        layout = { start: resolveMove(others, clip.duration, clip.start + frames, snapOptions), duration: clip.duration };
       }
-      setDrag({ clipId: clip.id, ...(edge ? { edge } : {}), layout });
+      setDrag({ clipId: clip.id, ...(edge ? { edge } : {}), layout, trackId: target.id });
     };
+    // On the window: moving to another track remounts the clip, and the listeners must outlive that.
     const finish = () => {
-      element.removeEventListener("pointermove", move);
-      element.removeEventListener("pointerup", up);
-      element.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
     };
     const cancel = () => {
       finish();
@@ -227,38 +292,58 @@ export function Timeline() {
       } else if (edge === "end" && layout.duration !== clip.duration) {
         command = { type: "trim_clip", clipId: clip.id, edge, delta: layout.duration - clip.duration };
         label = "Cắt bớt cuối clip";
-      } else if (!edge && layout.start !== clip.start) {
-        command = { type: "move_clip", clipId: clip.id, start: layout.start };
-        label = "Di chuyển clip";
+      } else if (!edge && (layout.start !== clip.start || target !== track)) {
+        command = { type: "move_clip", clipId: clip.id, start: layout.start, ...(target !== track ? { trackId: target.id } : {}) };
+        label = target !== track ? "Chuyển track" : "Di chuyển clip";
       }
       if (command) void dispatch(label, [command]).finally(() => setDrag(undefined));
       else setDrag(undefined);
     };
-    element.addEventListener("pointermove", move);
-    element.addEventListener("pointerup", up);
-    element.addEventListener("pointercancel", cancel);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   };
 
   const draggedAsset = () => project.assets.find((asset) => asset.id === assetDrag.assetId);
+
+  /** The row being pointed at if it can play the asset, otherwise the first one that can. */
+  const dropTrack = (event: DragEvent, asset: Asset): Track | undefined => {
+    const stub = { id: "", assetId: asset.id, start: 0, sourceIn: 0, duration: 1, volume: 100 };
+    const over = tracks.find((candidate) => candidate.id === trackIdAt(event.clientX, event.clientY));
+    if (over && trackAccepts(over, stub, project.assets)) return over;
+    return tracks.find((candidate) => trackAccepts(candidate, stub, project.assets));
+  };
 
   const onDragOver = (event: DragEvent) => {
     const asset = draggedAsset();
     if (!asset || !event.dataTransfer.types.includes(ASSET_DRAG_TYPE)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    setGhost({ start: resolveMove(clips, asset.durationFrames, frameAt(event.clientX), snapFor(undefined)), duration: asset.durationFrames });
+    const target = dropTrack(event, asset);
+    // No track for this kind yet: one is made on drop, and the main row shows where it would land.
+    const others = target?.clips ?? [];
+    setGhost({ start: resolveMove(others, asset.durationFrames, frameAt(event.clientX), snapFor(undefined)), duration: asset.durationFrames, trackId: target?.id ?? mainTrackId });
   };
 
   const onDrop = (event: DragEvent) => {
     event.preventDefault();
     const asset = draggedAsset();
-    if (asset && ghost) editor.addAsset(asset, ghost.start);
+    if (asset && ghost) {
+      const target = dropTrack(event, asset);
+      editor.addAsset(asset, ghost.start, target?.id);
+    }
     setGhost(undefined);
   };
 
   const step = rulerStep(pxPerFrame, fps);
   const ticks: number[] = [];
   for (let frame = 0; frame <= contentFrames; frame += step) ticks.push(frame);
+
+  // The top row is the track drawn last, as it looks on screen. Numbered only when a kind has several.
+  const rows = [...tracks].reverse().map((track) => {
+    const same = tracks.filter((candidate) => candidate.kind === track.kind);
+    return { track, name: same.length > 1 ? `${TRACK_NAMES[track.kind]} ${same.indexOf(track) + 1}` : TRACK_NAMES[track.kind] };
+  });
 
   const zoomValue = Math.log(pxPerFrame);
   const selected = selectedId !== undefined && clips.some((clip) => clip.id === selectedId);
@@ -277,6 +362,15 @@ export function Timeline() {
         </IconButton>
         <IconButton label="Bám điểm cắt" shortcut="N" pressed={snap} onClick={editor.toggleSnap}>
           <Magnet size={18} aria-hidden />
+        </IconButton>
+        <IconButton label="Thêm chữ tại playhead" shortcut="T" onClick={editor.addText}>
+          <Type size={18} aria-hidden />
+        </IconButton>
+        <IconButton label="Thêm track video" onClick={() => editor.addTrack("video")}>
+          <Clapperboard size={18} aria-hidden />
+        </IconButton>
+        <IconButton label="Thêm track âm thanh" onClick={() => editor.addTrack("audio")}>
+          <Music size={18} aria-hidden />
         </IconButton>
         <div className={styles.grow} />
         <IconButton label="Thu nhỏ timeline" shortcut="−" onClick={() => editor.zoom(-1)}>
@@ -300,11 +394,17 @@ export function Timeline() {
         </IconButton>
       </div>
 
+      <AgentNotice />
+
       <div className={styles.body}>
-        <div className={styles.labels} aria-hidden>
+        <div className={styles.labels}>
           <div className={styles.labelRuler} />
-          <div className={styles.labelVideo}>Hình</div>
-          <div className={styles.labelAudio}>Tiếng</div>
+          {rows.map(({ track, name }) => (
+            <Fragment key={track.id}>
+              <TrackLabel track={track} name={name} removable={track.id !== mainTrackId} spaced={false} />
+              {track.id === mainTrackId && <div className={`${styles.labelAudio} ${styles.labelAudioSpaced}`}>Tiếng</div>}
+            </Fragment>
+          ))}
         </div>
         <div ref={scroller} className={styles.scroller}>
           <div ref={content} className={styles.content}>
@@ -323,59 +423,141 @@ export function Timeline() {
               onDragLeave={() => setGhost(undefined)}
               onDrop={onDrop}
             >
-              <div className={styles.trackVideo}>
-                {clips.map((clip) => {
-                  const asset = project.assets.find((candidate) => candidate.id === clip.assetId);
-                  if (!asset) return null;
-                  const layout = drag?.clipId === clip.id ? drag.layout : clip;
+              {rows.map(({ track }) => {
+                // A clip being dragged shows in the row it would land in.
+                const shown = [
+                  ...track.clips.filter((clip) => !(drag && drag.clipId === clip.id && drag.trackId !== track.id)).map((clip) => ({ clip, owner: track })),
+                  ...(drag && drag.trackId === track.id
+                    ? tracks.flatMap((other) => (other.id === track.id ? [] : other.clips.filter((clip) => clip.id === drag.clipId).map((clip) => ({ clip, owner: other }))))
+                    : []),
+                ];
+                const layoutOf = (clip: Clip): Layout => (drag?.clipId === clip.id ? drag.layout : clip);
+                const agentNote = (clip: Clip) => (editor.agentClips.has(clip.id) ? ", agent vừa sửa" : "");
+                const ghostHere = ghost?.trackId === track.id && <Ghost start={ghost.start} duration={ghost.duration} />;
+                if (track.kind === "text") {
                   return (
-                    <ClipBlock
-                      key={clip.id}
-                      isButton
-                      className={styles.clipVideo}
-                      layout={layout}
-                      selected={clip.id === selectedId}
-                      label={`${asset.name}, bắt đầu ${frameToTimecode(layout.start, fps)}, dài ${frameToTimecode(layout.duration, fps)}`}
-                      onPointerDown={(event) => startClipDrag(event, clip, asset)}
-                      onClickKey={() => select(clip.id)}
-                    >
-                      <span data-edge="start" className={styles.handleStart} />
-                      <img
-                        className={styles.clipThumb}
-                        src={urls.thumbnail(projectId, asset.id, clip.sourceIn)}
-                        alt=""
-                        loading="lazy"
-                        draggable={false}
-                      />
-                      <span className={styles.clipName}>{asset.name}</span>
-                      <span data-edge="end" className={styles.handleEnd} />
-                    </ClipBlock>
+                    <div key={track.id} data-track-id={track.id} className={styles.trackVideo}>
+                      {shown.map(({ clip, owner }) => {
+                        if (isMediaClip(clip)) return null;
+                        return (
+                          <ClipBlock
+                            key={clip.id}
+                            isButton
+                            className={styles.clipText}
+                            layout={layoutOf(clip)}
+                            selected={clip.id === selectedId}
+                            byAgent={editor.agentClips.has(clip.id)}
+                            label={`Chữ: ${clip.text}, bắt đầu ${frameToTimecode(layoutOf(clip).start, fps)}${agentNote(clip)}`}
+                            onPointerDown={(event) => startClipDrag(event, clip, owner)}
+                            onClickKey={() => select(clip.id)}
+                          >
+                            <span data-edge="start" className={styles.handleStart} />
+                            {editor.agentClips.has(clip.id) && <Bot className={styles.agentMark} size={14} aria-hidden />}
+                            <span className={styles.clipName}>{clip.text}</span>
+                            <span data-edge="end" className={styles.handleEnd} />
+                          </ClipBlock>
+                        );
+                      })}
+                      {ghostHere}
+                    </div>
                   );
-                })}
-              </div>
-              <div className={styles.trackAudio}>
-                {clips.map((clip) => {
-                  const asset = project.assets.find((candidate) => candidate.id === clip.assetId);
-                  if (!asset) return null;
-                  const assetPeaks = peaks.get(asset.id);
+                }
+                if (track.kind === "audio") {
                   return (
-                    <ClipBlock
-                      key={clip.id}
-                      className={styles.clipAudio}
-                      layout={drag?.clipId === clip.id ? drag.layout : clip}
-                      selected={clip.id === selectedId}
-                      onPointerDown={(event) => startClipDrag(event, clip, asset)}
-                    >
-                      {assetPeaks && assetPeaks.length > 0 ? (
-                        <Waveform peaks={assetPeaks} sourceIn={clip.sourceIn} duration={clip.duration} seconds={framesToSeconds(clip.duration, fps)} />
-                      ) : (
-                        !asset.hasAudio && <span className={styles.noAudio}>Không có tiếng</span>
-                      )}
-                    </ClipBlock>
+                    <div key={track.id} data-track-id={track.id} className={styles.trackAudio}>
+                      {shown.map(({ clip, owner }) => {
+                        if (!isMediaClip(clip)) return null;
+                        const asset = project.assets.find((candidate) => candidate.id === clip.assetId);
+                        if (!asset) return null;
+                        const assetPeaks = peaks.get(asset.id);
+                        return (
+                          <ClipBlock
+                            key={clip.id}
+                            isButton
+                            className={styles.clipAudio}
+                            layout={layoutOf(clip)}
+                            selected={clip.id === selectedId}
+                            byAgent={editor.agentClips.has(clip.id)}
+                            label={`Âm thanh ${asset.name}, bắt đầu ${frameToTimecode(layoutOf(clip).start, fps)}${agentNote(clip)}`}
+                            onPointerDown={(event) => startClipDrag(event, clip, owner)}
+                            onClickKey={() => select(clip.id)}
+                          >
+                            <span data-edge="start" className={styles.handleStart} />
+                            {assetPeaks && assetPeaks.length > 0 && <Waveform peaks={assetPeaks} sourceIn={clip.sourceIn} duration={clip.duration} seconds={framesToSeconds(clip.duration, fps)} />}
+                            <span data-edge="end" className={styles.handleEnd} />
+                          </ClipBlock>
+                        );
+                      })}
+                      {ghostHere}
+                    </div>
                   );
-                })}
-              </div>
-              {ghost && <Ghost start={ghost.start} duration={ghost.duration} />}
+                }
+                return (
+                  <Fragment key={track.id}>
+                    <div data-track-id={track.id} className={styles.trackVideo}>
+                      {shown.map(({ clip, owner }) => {
+                        if (!isMediaClip(clip)) return null;
+                        const asset = project.assets.find((candidate) => candidate.id === clip.assetId);
+                        if (!asset) return null;
+                        const layout = layoutOf(clip);
+                        return (
+                          <ClipBlock
+                            key={clip.id}
+                            isButton
+                            className={styles.clipVideo}
+                            layout={layout}
+                            selected={clip.id === selectedId}
+                            byAgent={editor.agentClips.has(clip.id)}
+                            label={`${asset.name}, bắt đầu ${frameToTimecode(layout.start, fps)}, dài ${frameToTimecode(layout.duration, fps)}${clip.transitionIn ? ", có transition" : ""}${agentNote(clip)}`}
+                            onPointerDown={(event) => startClipDrag(event, clip, owner)}
+                            onClickKey={() => select(clip.id)}
+                          >
+                            <span data-edge="start" className={styles.handleStart} />
+                            {clip.transitionIn && <Blend className={styles.transitionMark} size={14} aria-hidden />}
+                            <img
+                              className={styles.clipThumb}
+                              src={urls.thumbnail(projectId, asset.id, clip.sourceIn)}
+                              alt=""
+                              loading="lazy"
+                              draggable={false}
+                            />
+                            {editor.agentClips.has(clip.id) && <Bot className={styles.agentMark} size={14} aria-hidden />}
+                            <span className={styles.clipName}>{asset.name}</span>
+                            <span data-edge="end" className={styles.handleEnd} />
+                          </ClipBlock>
+                        );
+                      })}
+                      {ghostHere}
+                    </div>
+                    {track.id === mainTrackId && (
+                      <div data-track-id={track.id} className={styles.trackAudio}>
+                        {shown.map(({ clip, owner }) => {
+                          if (!isMediaClip(clip)) return null;
+                          const asset = project.assets.find((candidate) => candidate.id === clip.assetId);
+                          if (!asset) return null;
+                          const assetPeaks = peaks.get(asset.id);
+                          return (
+                            <ClipBlock
+                              key={clip.id}
+                              className={styles.clipAudio}
+                              layout={layoutOf(clip)}
+                              selected={clip.id === selectedId}
+                              byAgent={editor.agentClips.has(clip.id)}
+                              onPointerDown={(event) => startClipDrag(event, clip, owner)}
+                            >
+                              {assetPeaks && assetPeaks.length > 0 ? (
+                                <Waveform peaks={assetPeaks} sourceIn={clip.sourceIn} duration={clip.duration} seconds={framesToSeconds(clip.duration, fps)} />
+                              ) : (
+                                !asset.hasAudio && <span className={styles.noAudio}>Không có tiếng</span>
+                              )}
+                            </ClipBlock>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              })}
               {clips.length === 0 && !ghost && <p className={styles.empty}>Kéo video từ Thư viện vào đây, hoặc bấm dấu cộng cạnh video.</p>}
             </div>
             <Playhead scroller={scroller} />

@@ -1,5 +1,5 @@
-import { Dialog as RadixDialog, Progress, Slider as RadixSlider, Toast, Tooltip } from "radix-ui";
-import { X } from "lucide-react";
+import { Dialog as RadixDialog, Progress, Select as RadixSelect, Slider as RadixSlider, Tabs as RadixTabs, Toast, Tooltip } from "radix-ui";
+import { Check, ChevronDown, X } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -139,6 +139,62 @@ export function UiProvider({ children }: { children: ReactNode }) {
         </Toast.Provider>
       </Tooltip.Provider>
     </ToastContext.Provider>
+  );
+}
+
+export function Tabs({ label, tabs, defaultValue }: { label: string; defaultValue: string; tabs: Array<{ value: string; title: string; content: ReactNode }> }) {
+  return (
+    <RadixTabs.Root className={styles.tabs} defaultValue={defaultValue}>
+      <RadixTabs.List className={styles.tabList} aria-label={label}>
+        {tabs.map((tab) => (
+          <RadixTabs.Trigger key={tab.value} value={tab.value} className={styles.tab}>
+            {tab.title}
+          </RadixTabs.Trigger>
+        ))}
+      </RadixTabs.List>
+      {tabs.map((tab) => (
+        <RadixTabs.Content key={tab.value} value={tab.value} className={styles.tabContent}>
+          {tab.content}
+        </RadixTabs.Content>
+      ))}
+    </RadixTabs.Root>
+  );
+}
+
+export function Select({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <RadixSelect.Root value={value} onValueChange={onChange}>
+      <RadixSelect.Trigger className={styles.selectTrigger} aria-label={label}>
+        <RadixSelect.Value />
+        <RadixSelect.Icon>
+          <ChevronDown size={16} aria-hidden />
+        </RadixSelect.Icon>
+      </RadixSelect.Trigger>
+      <RadixSelect.Portal>
+        <RadixSelect.Content className={styles.selectContent} position="popper" sideOffset={4}>
+          <RadixSelect.Viewport>
+            {options.map((option) => (
+              <RadixSelect.Item key={option.value} value={option.value} className={styles.selectItem}>
+                <RadixSelect.ItemText>{option.label}</RadixSelect.ItemText>
+                <RadixSelect.ItemIndicator>
+                  <Check size={16} aria-hidden />
+                </RadixSelect.ItemIndicator>
+              </RadixSelect.Item>
+            ))}
+          </RadixSelect.Viewport>
+        </RadixSelect.Content>
+      </RadixSelect.Portal>
+    </RadixSelect.Root>
   );
 }
 

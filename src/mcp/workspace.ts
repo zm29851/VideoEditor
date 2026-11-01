@@ -1,16 +1,25 @@
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, parse, sep } from "node:path";
 import type { CommandEngine } from "../engine.ts";
 import { JobQueue, type Job } from "../jobs.ts";
 import { buildPreviewProject, exportProject, timelineDuration } from "../media/export.ts";
-import { importVideo } from "../media/import.ts";
-import type { Project } from "../schema.ts";
+import { importAudio, importVideo } from "../media/import.ts";
+import { detectScenes } from "../media/analyze.ts";
+import { findWhisper, loadTranscript, loadTranscripts, transcribeAsset } from "../media/whisper.ts";
+import { isMediaClip, type Asset, type FrameRate, type Project, type Transcript } from "../schema.ts";
+import { AgentPresence } from "./presence.ts";
 import { createProjectFolder, openProjectFolder, projectPaths } from "../store.ts";
 import { frameToTimecode } from "../time.ts";
 
 const PROJECT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+const LANGUAGE = /^(auto|[a-z]{2,3})$/;
 const VIDEO_EXTENSIONS = new Set([".mov", ".mp4", ".m4v", ".mkv", ".webm", ".avi"]);
+const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"]);
+
+export function isAudioFile(path: string): boolean {
+  return AUDIO_EXTENSIONS.has(extname(path).toLowerCase());
+}
 
 /** Export names are checked, so a file always stays inside the project folder. */
 const EXPORT_NAME = /^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,99}$/u;
@@ -18,7 +27,7 @@ const EXPORT_NAME = /^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,99}$/u;
 export interface MediaEntry {
   name: string;
   path: string;
-  kind: "dir" | "video";
+  kind: "dir" | "video" | "audio";
   sizeBytes?: number;
 }
 
@@ -52,13 +61,15 @@ function isInside(dir: string, real: string): boolean {
 /** The projects on disk, kept as one engine each so every caller shares the same revision. */
 export class Workspace {
   readonly root: string;
-  readonly jobs = new JobQueue();
+  readonly jobs: JobQueue;
+  readonly agent = new AgentPresence();
   readonly mediaDirs: string[];
   #engines = new Map<string, CommandEngine>();
 
   constructor(root: string, mediaDirs: string[] = defaultMediaDirs()) {
     mkdirSync(root, { recursive: true });
     this.root = realpathSync(root);
+    this.jobs = new JobQueue(join(this.root, ".jobs.json"));
     this.mediaDirs = mediaDirs.filter(existsSync).map((dir) => realpathSync(dir));
   }
 
@@ -76,7 +87,7 @@ export class Workspace {
       .map((entry) => entry.name);
   }
 
-  create(projectId: string, options: { name?: string; width?: number; height?: number }): CommandEngine {
+  create(projectId: string, options: { name?: string; width?: number; height?: number; fps?: FrameRate }): CommandEngine {
     const engine = createProjectFolder(this.projectRoot(projectId), { name: projectId, ...options });
     this.#engines.set(projectId, engine);
     return engine;
@@ -97,8 +108,8 @@ export class Workspace {
     if (!isAbsolute(path)) throw new Error(`Cần đường dẫn tuyệt đối, nhận được "${path}".`);
     if (!existsSync(path)) throw new Error(`Không tìm thấy file "${path}".`);
     const real = realpathSync(path);
-    if (!VIDEO_EXTENSIONS.has(extname(real).toLowerCase())) {
-      throw new Error(`"${path}" không phải file video được hỗ trợ (${[...VIDEO_EXTENSIONS].join(", ")}).`);
+    if (!VIDEO_EXTENSIONS.has(extname(real).toLowerCase()) && !isAudioFile(real)) {
+      throw new Error(`"${path}" không phải file video hoặc âm thanh được hỗ trợ (${[...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS].join(", ")}).`);
     }
     if (!this.mediaDirs.some((dir) => isInside(dir, real))) {
       throw new Error(`"${path}" nằm ngoài các thư mục được phép: ${this.mediaDirs.join(", ")}.`);
@@ -134,6 +145,8 @@ export class Workspace {
         if (stat.isDirectory()) entries.push({ name: entry, path: full, kind: "dir" });
         else if (VIDEO_EXTENSIONS.has(extname(entry).toLowerCase())) {
           entries.push({ name: entry, path: full, kind: "video", sizeBytes: stat.size });
+        } else if (isAudioFile(entry)) {
+          entries.push({ name: entry, path: full, kind: "audio", sizeBytes: stat.size });
         }
       } catch {
         // A broken link or a file removed while listing is simply not shown.
@@ -150,11 +163,16 @@ export class Workspace {
     return this.jobs.enqueue(
       "import",
       projectId,
-      async ({ setStage, setProgress }) => {
-        const { asset, timings } = await importVideo(this.projectRoot(projectId), source, engine.project.fps, undefined, ({ stage, percent }) => {
+      async ({ setStage, setProgress, signal }) => {
+        const report = ({ stage, percent }: { stage: string; percent: number }) => {
           setStage(stage);
           setProgress(percent);
-        });
+        };
+        const root = this.projectRoot(projectId);
+        const { fps } = engine.project;
+        const { asset, timings } = isAudioFile(source)
+          ? await importAudio(root, source, fps, report, signal)
+          : await importVideo(root, source, fps, undefined, report, signal);
         engine.registerAsset(asset);
         return { asset, timings, revision: engine.project.revision };
       },
@@ -162,14 +180,88 @@ export class Workspace {
     );
   }
 
-  #startRender(type: string, projectId: string, project: Project, output: string, draft: boolean, revision: number): Job {
-    const total = timelineDuration(project);
-    if (total === 0) throw new Error("Timeline đang rỗng, không có gì để xuất.");
+  #asset(projectId: string, assetId: string): Asset {
+    const asset = this.engine(projectId).project.assets.find((candidate) => candidate.id === assetId);
+    if (!asset) throw new Error(`Không có asset "${assetId}".`);
+    return asset;
+  }
+
+  /** Asking again while the same video is waiting or running returns that job. */
+  startTranscribe(projectId: string, assetId: string, language: string): Job {
+    if (!LANGUAGE.test(language)) throw new Error(`Ngôn ngữ "${language}" không hợp lệ: dùng mã như "vi", "en" hoặc "auto".`);
+    const asset = this.#asset(projectId, assetId);
+    if (!asset.hasAudio) throw new Error(`Video "${asset.name}" không có tiếng nên không tạo được transcript.`);
+    const running = this.jobs
+      .listForProject(projectId)
+      .find((job) => job.type === "transcribe" && job.assetId === assetId && (job.status === "queued" || job.status === "running"));
+    if (running) return running;
+    const setup = findWhisper();
+    const { fps } = this.engine(projectId).project;
+    return this.jobs.enqueue(
+      "transcribe",
+      projectId,
+      async ({ setStage, setProgress, signal }) => {
+        const transcript = await transcribeAsset(this.projectRoot(projectId), asset, fps, language, setup, (stage, percent) => {
+          setStage(stage);
+          setProgress(percent);
+        }, signal);
+        return { assetId, language: transcript.language, model: transcript.model, wordCount: transcript.segments.reduce((sum, segment) => sum + segment.words.length, 0) };
+      },
+      asset.name,
+      assetId,
+    );
+  }
+
+  transcript(projectId: string, assetId: string): Transcript | undefined {
+    this.#asset(projectId, assetId);
+    return loadTranscript(this.projectRoot(projectId), assetId);
+  }
+
+  transcripts(projectId: string): Map<string, Transcript> {
+    return loadTranscripts(this.projectRoot(projectId), this.engine(projectId).project);
+  }
+
+  /** Reads the whole picture of every video on the timeline, so it runs as a job. */
+  startDetectScenes(projectId: string, threshold: number): Job {
+    const project = this.engine(projectId).project;
+    const clips = project.timeline.tracks.filter((track) => track.kind === "video").flatMap((track) => track.clips).filter(isMediaClip);
+    const used = project.assets.filter((asset) => clips.some((clip) => clip.assetId === asset.id));
+    if (used.length === 0) throw new Error("Timeline đang rỗng, không có gì để phân tích.");
+    return this.jobs.enqueue("detect_scenes", projectId, async ({ setProgress, signal }) => {
+      const cuts: Array<{ frame: number; timecode: string; clipId: string; score: number }> = [];
+      for (const [index, asset] of used.entries()) {
+        const scenes = await detectScenes(asset, project.fps, threshold, signal);
+        for (const clip of clips.filter((candidate) => candidate.assetId === asset.id)) {
+          for (const scene of scenes) {
+            // A cut on the clip's first frame is already a cut on the timeline.
+            if (scene.frame <= clip.sourceIn || scene.frame >= clip.sourceIn + clip.duration) continue;
+            const frame = clip.start + scene.frame - clip.sourceIn;
+            cuts.push({ frame, timecode: frameToTimecode(frame, project.fps), clipId: clip.id, score: scene.score });
+          }
+        }
+        setProgress(((index + 1) / used.length) * 99);
+      }
+      return { revision: project.revision, cuts: cuts.sort((a, b) => a.frame - b.frame) };
+    });
+  }
+
+  #startRender(type: string, projectId: string, project: Project, output: string, draft: boolean, revision: number, range?: { start: number; end: number }): Job {
+    const end = timelineDuration(project);
+    const window = range ? { start: range.start, end: Math.min(range.end, end) } : { start: 0, end };
+    const total = window.end - window.start;
+    if (total <= 0) throw new Error("Timeline đang rỗng, không có gì để xuất.");
+    const textDir = join(this.projectRoot(projectId), "cache", "text");
     return this.jobs.enqueue(
       type,
       projectId,
-      async ({ setProgress }) => {
-        await exportProject(project, output, { draft }, (frame) => setProgress((frame / total) * 99));
+      async ({ setProgress, signal }) => {
+        try {
+          await exportProject(project, output, { draft, range: window, textDir, signal }, (frame) => setProgress((frame / total) * 99));
+        } catch (error) {
+          // A half-written file would look like a finished export.
+          rmSync(output, { force: true });
+          throw error;
+        }
         return { path: output, revision, durationFrames: total, durationTimecode: frameToTimecode(total, project.fps) };
       },
       basename(output),
@@ -180,7 +272,7 @@ export class Workspace {
     const project = this.engine(projectId).project;
     if (from < 0 || to <= from) throw new Error(`Khoảng frame ${from}..${to} không hợp lệ.`);
     const output = uniquePath(join(this.projectRoot(projectId), "previews"), `preview-r${project.revision}-${from}-${to}.mp4`);
-    return this.#startRender("preview", projectId, buildPreviewProject(project, from, to), output, true, project.revision);
+    return this.#startRender("preview", projectId, buildPreviewProject(project), output, true, project.revision, { start: from, end: to });
   }
 
   /** Renders the timeline as it is now. Later edits do not affect the running job. */

@@ -1,14 +1,14 @@
-import type { Asset, Clip, FrameRate } from "../../../src/schema.ts";
+import { isMediaClip, type Asset, type Clip, type FrameRate, type Project, type Track } from "../../../src/schema.ts";
 
 export function clipEnd(clip: Clip): number {
   return clip.start + clip.duration;
 }
 
-export function timelineEnd(clips: Clip[]): number {
+export function timelineEnd(clips: readonly Clip[]): number {
   return clips.reduce((end, clip) => Math.max(end, clipEnd(clip)), 0);
 }
 
-export function clipAt(clips: Clip[], frame: number): Clip | undefined {
+export function clipAt<T extends Clip>(clips: readonly T[], frame: number): T | undefined {
   return clips.find((clip) => frame >= clip.start && frame < clipEnd(clip));
 }
 
@@ -72,14 +72,15 @@ export function resolveMove(others: Clip[], duration: number, desired: number, s
 
 export interface TrimResult {
   start: number;
-  sourceIn: number;
+  /** Absent for text, which has no source. */
+  sourceIn?: number;
   duration: number;
 }
 
 /** Limits an edge to the source video, the neighbouring clips and a length of at least one frame. */
 export function resolveTrim(
   clip: Clip,
-  asset: Asset,
+  asset: Asset | undefined,
   others: Clip[],
   edge: "start" | "end",
   desired: number,
@@ -88,15 +89,40 @@ export function resolveTrim(
   const frame = snap ? snapFrame(desired, snap.targets, snap.tolerance) : desired;
   if (edge === "start") {
     const previousEnd = others.filter((other) => clipEnd(other) <= clip.start).reduce((end, other) => Math.max(end, clipEnd(other)), 0);
-    const earliest = Math.max(previousEnd, clip.start - clip.sourceIn);
+    const earliest = isMediaClip(clip) ? Math.max(previousEnd, clip.start - clip.sourceIn) : previousEnd;
     const start = Math.min(Math.max(frame, earliest), clipEnd(clip) - 1);
     const delta = start - clip.start;
-    return { start, sourceIn: clip.sourceIn + delta, duration: clip.duration - delta };
+    return { start, ...(isMediaClip(clip) ? { sourceIn: clip.sourceIn + delta } : {}), duration: clip.duration - delta };
   }
   const nextStart = others.filter((other) => other.start >= clipEnd(clip)).reduce((start, other) => Math.min(start, other.start), Infinity);
-  const latest = Math.min(nextStart, clip.start + asset.durationFrames - clip.sourceIn);
+  const latest = isMediaClip(clip) && asset ? Math.min(nextStart, clip.start + asset.durationFrames - clip.sourceIn) : nextStart;
   const end = Math.max(Math.min(frame, latest), clip.start + 1);
-  return { start: clip.start, sourceIn: clip.sourceIn, duration: end - clip.start };
+  return { start: clip.start, ...(isMediaClip(clip) ? { sourceIn: clip.sourceIn } : {}), duration: end - clip.start };
+}
+
+/** Whether a clip can be played by a track of this kind. */
+export function trackAccepts(track: Track, clip: Clip, assets: readonly Asset[]): boolean {
+  if (!isMediaClip(clip)) return track.kind === "text";
+  const asset = assets.find((candidate) => candidate.id === clip.assetId);
+  if (track.kind === "video") return asset?.hasVideo === true;
+  return track.kind === "audio" && asset?.hasAudio === true;
+}
+
+/** The nearest track above or below that can take the clip, or undefined at the end of the list. */
+export function neighbourTrack(tracks: readonly Track[], clip: Clip, direction: 1 | -1, assets: readonly Asset[]): Track | undefined {
+  const current = tracks.findIndex((track) => track.clips.some((candidate) => candidate.id === clip.id));
+  for (let index = current + direction; index >= 0 && index < tracks.length; index += direction) {
+    if (trackAccepts(tracks[index]!, clip, assets)) return tracks[index];
+  }
+  return undefined;
+}
+
+/** A new track's id that nothing else on this timeline uses. */
+export function freeTrackId(project: Project, kind: Track["kind"]): string {
+  const used = new Set(project.timeline.tracks.map((track) => track.id));
+  let number = 1;
+  while (used.has(`${kind}_${number}`)) number++;
+  return `${kind}_${number}`;
 }
 
 const TICK_STEPS_SECONDS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];

@@ -12,7 +12,7 @@ function defaultName(projectName: string): string {
 }
 
 export function ExportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const { project, projectId, clips, jobs, refreshStatus } = useEditor();
+  const { project, projectId, clips, jobs } = useEditor();
   const [name, setName] = useState(() => defaultName(project.name));
   const [jobId, setJobId] = useState<string>();
   const [error, setError] = useState<string>();
@@ -24,6 +24,15 @@ export function ExportDialog({ open, onOpenChange }: { open: boolean; onOpenChan
     if (open && job && job.status !== "running" && job.status !== "queued") setError(undefined);
   }, [open, job?.status]);
 
+  async function cancel() {
+    if (!jobId) return;
+    try {
+      await api.cancelJob(projectId, jobId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không hủy được.");
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setStarting(true);
@@ -31,7 +40,6 @@ export function ExportDialog({ open, onOpenChange }: { open: boolean; onOpenChan
     try {
       const started = await api.startExport(projectId, name.trim());
       setJobId(started.id);
-      refreshStatus();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Không bắt đầu xuất được.");
     }
@@ -50,6 +58,8 @@ export function ExportDialog({ open, onOpenChange }: { open: boolean; onOpenChan
           <p>{job?.status === "running" ? `Đang xuất ${job.progress ?? 0}%` : "Đang chờ tới lượt"}</p>
           <ProgressBar value={job?.progress} label="Tiến độ xuất video" />
           <p className={styles.muted}>Bạn có thể đóng hộp thoại và tiếp tục sửa. Những thay đổi sau lúc này không có trong bản xuất.</p>
+          {error && <p role="alert" className={styles.errorText}>{error}</p>}
+          <Button onClick={() => void cancel()} disabled={!job}>Hủy xuất video</Button>
         </div>
       )}
       {job?.status === "succeeded" && (
@@ -65,6 +75,7 @@ export function ExportDialog({ open, onOpenChange }: { open: boolean; onOpenChan
           </a>
         </div>
       )}
+      {job?.status === "cancelled" && <p className={styles.muted}>Đã hủy, không có file nào được giữ lại.</p>}
       {job?.status === "failed" && (
         <div className={styles.exportState} role="alert">
           <p className={styles.errorText}>Xuất video không thành công. Hãy thử lại, nếu vẫn lỗi thì kiểm tra FFmpeg.</p>

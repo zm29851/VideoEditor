@@ -1,42 +1,60 @@
 import { ArrowLeft, Download, Keyboard, Redo2, Undo2 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { Asset, Clip, CommandInput, Project } from "../../../src/schema.ts";
-import { api, ApiError, type Job, type ProjectState } from "../api.ts";
-import { Button, EmptyState, IconButton, useToast } from "../ui/ui.tsx";
+import { isMediaClip, type Asset, type Clip, type CommandInput, type MediaClip, type Project, type Track } from "../../../src/schema.ts";
+import { api, ApiError, urls, type ActivityEntry, type AgentStatus, type Job, type ProjectEvent, type ProjectState } from "../api.ts";
+import { Button, EmptyState, IconButton, Tabs, useToast } from "../ui/ui.tsx";
+import { Activity } from "./Activity.tsx";
+import { agentClipIds, unseenAgentEntries } from "./agentNotice.ts";
+import { AgentStatusBadge } from "./AgentStatusBadge.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
 import { Library } from "./Library.tsx";
 import { Player } from "./player.ts";
 import { Preview } from "./Preview.tsx";
 import { Properties } from "./Properties.tsx";
+import { runRebased } from "./rebase.ts";
 import { ShortcutsDialog, useShortcuts } from "./Shortcuts.tsx";
 import { Timeline } from "./Timeline.tsx";
-import { clipAt, nearestFreeStart, timelineEnd } from "./timelineOps.ts";
+import { TranscriptPanel } from "./TranscriptPanel.tsx";
+import { clipAt, freeTrackId, neighbourTrack, nearestFreeStart, timelineEnd } from "./timelineOps.ts";
 import styles from "./Editor.module.css";
 
-const POLL_IDLE_MS = 3000;
-const POLL_BUSY_MS = 1000;
+const RECONNECT_MIN_MS = 500;
+const RECONNECT_MAX_MS = 5000;
 export const MIN_PX_PER_FRAME = 0.01;
 export const MAX_PX_PER_FRAME = 16;
 const ZOOM_STEP = 1.5;
+const NEW_TEXT_SECONDS = 3;
 
 export interface EditorContextValue {
   projectId: string;
   project: Project;
+  /** Every clip on every track. */
   clips: Clip[];
+  /** The first video track's clips, where speech is read from. */
+  mainClips: MediaClip[];
+  tracks: Track[];
   trackId: string;
   player: Player;
   jobs: Job[];
-  refreshStatus: () => void;
   selectedId: string | undefined;
   select: (clipId: string | undefined) => void;
-  dispatch: (label: string, commands: CommandInput[]) => Promise<ProjectState & { createdClipIds: string[] } | undefined>;
-  addAsset: (asset: Asset, start?: number) => void;
+  dispatch: (label: string, commands: CommandInput[] | ((latest: Project) => CommandInput[])) => Promise<ProjectState & { createdClipIds: string[] } | undefined>;
+  addAsset: (asset: Asset, start?: number, trackId?: string) => void;
+  addText: () => void;
+  addTrack: (kind: Track["kind"]) => void;
+  moveToTrack: (direction: 1 | -1) => void;
   cut: () => void;
   remove: (ripple: boolean) => void;
   trimToPlayhead: (edge: "start" | "end") => void;
   nudge: (delta: number) => void;
   undo: () => void;
   redo: () => void;
+  activity: ActivityEntry[];
+  unseenAgent: ActivityEntry[];
+  agentClips: Set<string>;
+  revertBatch: (entry: ActivityEntry) => void;
+  revertLatestAgentBatch: () => void;
+  markAgentSeen: () => void;
   snap: boolean;
   toggleSnap: () => void;
   pxPerFrame: number;
@@ -59,10 +77,35 @@ function fpsLabel(project: Project): string {
   return `${Number.isInteger(value) ? value : value.toFixed(2)} fps`;
 }
 
+function seenKey(projectId: string): string {
+  return `ve:agent-seen:${projectId}`;
+}
+
+/** Only a convenience: without storage, the notice simply starts from what is on screen. */
+function readSeen(projectId: string): number | undefined {
+  try {
+    const stored = localStorage.getItem(seenKey(projectId));
+    return stored === null ? undefined : Number(stored);
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSeen(projectId: string, revision: number): void {
+  try {
+    localStorage.setItem(seenKey(projectId), String(revision));
+  } catch {
+    // The notice comes back on the next visit. Nothing else depends on it.
+  }
+}
+
 export function Editor({ projectId }: { projectId: string }) {
   const [state, setState] = useState<ProjectState>();
   const [loadError, setLoadError] = useState<ApiError>();
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [agent, setAgent] = useState<AgentStatus>({ state: "offline" });
+  const [connected, setConnected] = useState(true);
+  const [seenRevision, setSeenRevision] = useState<number>();
   const [selectedId, setSelectedId] = useState<string>();
   const [snap, setSnap] = useState(true);
   const [pxPerFrame, setPxPerFrameState] = useState(1);
@@ -74,16 +117,24 @@ export function Editor({ projectId }: { projectId: string }) {
   const stateRef = useRef<ProjectState | undefined>(undefined);
   // Edits run one at a time, so holding a key never sends a stale revision.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
-  const pollNow = useRef<() => void>(() => {});
 
   const apply = useCallback(
     (next: ProjectState) => {
+      const current = stateRef.current;
+      // A response and a push can arrive in either order. The state at one revision is always the same.
+      if (current && next.project.revision <= current.project.revision) return;
       stateRef.current = next;
       setState(next);
       const clips = next.project.timeline.tracks.flatMap((track) => track.clips);
-      player.setTimeline(clips, next.project.fps);
+      player.setTimeline(next.project.timeline.tracks, next.project.assets, next.project.fps);
+      setSelectedId((selected) => (clips.some((clip) => clip.id === selected) ? selected : undefined));
+      if (!current) {
+        const seen = readSeen(projectId);
+        if (seen === undefined) writeSeen(projectId, next.project.revision);
+        setSeenRevision(seen ?? next.project.revision);
+      }
     },
-    [player],
+    [player, projectId],
   );
 
   useEffect(() => {
@@ -105,51 +156,75 @@ export function Editor({ projectId }: { projectId: string }) {
     player.onError = toast;
   }, [player, toast]);
 
-  // Shows imports, exports and edits made by others until Phase 3 replaces this with WebSocket.
+  // Edits by anyone, job progress and the agent's status all arrive here.
   useEffect(() => {
+    let socket: WebSocket | undefined;
     let timer: ReturnType<typeof setTimeout>;
     let stopped = false;
-    const poll = async () => {
-      clearTimeout(timer);
-      let busy = false;
-      try {
-        const status = await api.status(projectId);
-        if (stopped) return;
-        setJobs(status.jobs);
-        busy = status.jobs.some((job) => job.status === "queued" || job.status === "running");
-        const current = stateRef.current;
-        if (current && status.revision !== current.project.revision) {
-          const latest = await api.getProject(projectId);
-          if (!stopped && latest.project.revision >= (stateRef.current?.project.revision ?? 0)) apply(latest);
+    let delay = RECONNECT_MIN_MS;
+    const connect = () => {
+      socket = new WebSocket(urls.events(projectId));
+      socket.onmessage = (message) => {
+        const event = JSON.parse(String(message.data)) as ProjectEvent;
+        switch (event.type) {
+          case "snapshot":
+            delay = RECONNECT_MIN_MS;
+            setConnected(true);
+            apply(event.state);
+            setJobs(event.jobs);
+            setAgent(event.agent);
+            break;
+          case "state":
+            apply(event.state);
+            break;
+          case "job":
+            setJobs((current) => [...current.filter((job) => job.id !== event.job.id), event.job]);
+            break;
+          case "agent":
+            setAgent(event.agent);
+            break;
         }
-      } catch {
-        // The next attempt reports nothing new if the server is gone; edits show their own error.
-      }
-      if (!stopped) timer = setTimeout(poll, busy ? POLL_BUSY_MS : POLL_IDLE_MS);
+      };
+      socket.onclose = () => {
+        if (stopped) return;
+        setConnected(false);
+        timer = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, RECONNECT_MAX_MS);
+      };
     };
-    pollNow.current = () => void poll();
-    void poll();
+    connect();
     return () => {
       stopped = true;
       clearTimeout(timer);
+      socket?.close();
     };
   }, [projectId, apply]);
 
   const send = useCallback(
-    <T extends ProjectState>(call: (revision: number) => Promise<T>): Promise<T | undefined> => {
+    <T extends ProjectState>(call: (latest: Project) => Promise<T>, options: { label: string; rebase: boolean }): Promise<T | undefined> => {
       const work = queue.current.then(async () => {
-        try {
-          const next = await call(stateRef.current!.project.revision);
-          apply(next);
-          return next;
-        } catch (error) {
-          if (error instanceof ApiError && error.code === "stale_revision") {
-            apply(await api.getProject(projectId));
-            toast("Timeline vừa được thay đổi nên thao tác chưa áp dụng. Hãy kiểm tra rồi làm lại.");
-          } else {
-            toast(error instanceof Error ? error.message : "Thao tác không thành công.");
+        const outcome = await runRebased({
+          attempt: async () => {
+            const next = await call(stateRef.current!.project);
+            apply(next);
+            return next;
+          },
+          // Someone else got in first. Commands name clips, not positions in the list, so they still mean the same.
+          refresh: async () => apply(await api.getProject(projectId)),
+          isStale: (error) => error instanceof ApiError && error.code === "stale_revision",
+          maxAttempts: options.rebase ? 3 : 1,
+        });
+        switch (outcome.kind) {
+          case "done":
+            return outcome.value;
+          case "stale":
+            toast(`Timeline vừa được thay đổi nên chưa thực hiện "${options.label}". Hãy kiểm tra rồi làm lại.`);
+            return undefined;
+          case "failed": {
+            const message = outcome.error instanceof Error ? outcome.error.message : "Thao tác không thành công.";
+            toast(outcome.rebased ? `Timeline vừa thay đổi nên không thể thực hiện "${options.label}": ${message}` : message);
+            return undefined;
           }
-          return undefined;
         }
       });
       queue.current = work;
@@ -158,10 +233,21 @@ export function Editor({ projectId }: { projectId: string }) {
     [apply, projectId, toast],
   );
 
-  const dispatch = useCallback(
-    (label: string, commands: CommandInput[]) => send((revision) => api.batch(projectId, revision, label, commands)),
+  const dispatch = useCallback<EditorContextValue["dispatch"]>(
+    (label, commands) =>
+      send(
+        (latest) => api.batch(projectId, latest.revision, label, typeof commands === "function" ? commands(latest) : commands),
+        { label, rebase: true },
+      ),
     [projectId, send],
   );
+
+  const markAgentSeen = useCallback(() => {
+    const revision = stateRef.current?.project.revision;
+    if (revision === undefined) return;
+    writeSeen(projectId, revision);
+    setSeenRevision(revision);
+  }, [projectId]);
 
   const setPxPerFrame = useCallback((value: number) => {
     setPxPerFrameState(Math.min(MAX_PX_PER_FRAME, Math.max(MIN_PX_PER_FRAME, value)));
@@ -174,33 +260,75 @@ export function Editor({ projectId }: { projectId: string }) {
   const value = useMemo<EditorContextValue | null>(() => {
     if (!state) return null;
     const { project } = state;
-    const track = project.timeline.tracks[0]!;
-    const clips = track.clips;
+    const tracks = project.timeline.tracks;
+    const track = tracks.find((candidate) => candidate.kind === "video")!;
+    const clips = tracks.flatMap((candidate) => candidate.clips);
+    const mainClips = track.clips.filter(isMediaClip);
+    const unseenAgent = unseenAgentEntries(state.activity, seenRevision ?? project.revision);
+    const revertBatch = (entry: ActivityEntry) =>
+      void send((latest) => api.revert(projectId, latest.revision, entry.revision), { label: `Hoàn tác lô: ${entry.label}`, rebase: true });
 
     /** The selected clip if the playhead is on it, otherwise whichever clip the playhead is on. */
     const clipUnderPlayhead = (): Clip | undefined => {
       const selected = clips.find((clip) => clip.id === selectedId);
       if (selected && clipAt([selected], player.frame)) return selected;
-      return clipAt(clips, player.frame);
+      return clipAt(mainClips, player.frame) ?? clipAt(clips, player.frame);
     };
 
     return {
       projectId,
       project,
       clips,
+      mainClips,
+      tracks,
       trackId: track.id,
       player,
       jobs,
-      refreshStatus: () => pollNow.current(),
       selectedId,
       select: setSelectedId,
       dispatch,
-      addAsset: (asset, start) => {
-        const desired = start ?? timelineEnd(clips);
-        const position = nearestFreeStart(clips, desired, asset.durationFrames);
-        void dispatch(`Thêm ${asset.name}`, [
-          { type: "add_clip", trackId: track.id, assetId: asset.id, start: position, duration: asset.durationFrames },
-        ]).then((result) => setSelectedId(result?.createdClipIds[0]));
+      addAsset: (asset, start, trackId) => {
+        // Worked out from the latest timeline, because the agent may have filled this spot in the meantime.
+        void dispatch(`Thêm ${asset.name}`, (latest) => {
+          const kind: Track["kind"] = asset.hasVideo ? "video" : "audio";
+          const target = latest.timeline.tracks.find((candidate) => candidate.id === trackId) ?? latest.timeline.tracks.find((candidate) => candidate.kind === kind);
+          const id = target?.id ?? freeTrackId(latest, kind);
+          const others = target?.clips ?? [];
+          const position = nearestFreeStart(others, start ?? timelineEnd(others), asset.durationFrames);
+          return [
+            ...(target ? [] : [{ type: "add_track" as const, kind, id }]),
+            { type: "add_clip" as const, trackId: id, assetId: asset.id, start: position, duration: asset.durationFrames },
+          ];
+        }).then((result) => setSelectedId(result?.createdClipIds[0]));
+      },
+      addText: () => {
+        const frame = player.frame;
+        const seconds = Math.round((NEW_TEXT_SECONDS * project.fps.num) / project.fps.den);
+        void dispatch("Thêm chữ", (latest) => {
+          const target = latest.timeline.tracks.find((candidate) => candidate.kind === "text");
+          const id = target?.id ?? freeTrackId(latest, "text");
+          const others = target?.clips ?? [];
+          return [
+            ...(target ? [] : [{ type: "add_track" as const, kind: "text" as const, id }]),
+            { type: "add_text" as const, trackId: id, start: nearestFreeStart(others, frame, seconds), duration: seconds, text: "Chữ mới" },
+          ];
+        }).then((result) => setSelectedId(result?.createdClipIds[0]));
+      },
+      addTrack: (kind) => {
+        void dispatch("Thêm track", (latest) => [{ type: "add_track", kind, id: freeTrackId(latest, kind) }]);
+      },
+      moveToTrack: (direction) => {
+        const clip = clips.find((candidate) => candidate.id === selectedId);
+        if (!clip) {
+          toast("Hãy chọn một clip để chuyển track.");
+          return;
+        }
+        const target = neighbourTrack(tracks, clip, direction, project.assets);
+        if (!target) {
+          toast("Không còn track nào phát được clip này ở hướng đó.");
+          return;
+        }
+        void dispatch("Chuyển track", [{ type: "move_clip", clipId: clip.id, trackId: target.id, start: nearestFreeStart(target.clips, clip.start, clip.duration) }]);
       },
       cut: () => {
         const clip = clipUnderPlayhead();
@@ -237,8 +365,19 @@ export function Editor({ projectId }: { projectId: string }) {
         const start = Math.max(0, clip.start + delta);
         if (start !== clip.start) void dispatch("Di chuyển clip", [{ type: "move_clip", clipId: clip.id, start }]);
       },
-      undo: () => void send((revision) => api.undo(projectId, revision)),
-      redo: () => void send((revision) => api.redo(projectId, revision)),
+      // Never resent: after someone else's edit, the same button would take back a different change.
+      undo: () => void send((latest) => api.undo(projectId, latest.revision), { label: "Hoàn tác", rebase: false }),
+      redo: () => void send((latest) => api.redo(projectId, latest.revision), { label: "Làm lại", rebase: false }),
+      activity: state.activity,
+      unseenAgent,
+      agentClips: agentClipIds(unseenAgent),
+      revertBatch,
+      revertLatestAgentBatch: () => {
+        const entry = state.activity.find((candidate) => candidate.actor === "agent" && candidate.revertible);
+        if (entry) revertBatch(entry);
+        else toast("Không còn lô nào của agent để hoàn tác.");
+      },
+      markAgentSeen,
       snap,
       toggleSnap: () => setSnap((current) => !current),
       pxPerFrame,
@@ -249,7 +388,7 @@ export function Editor({ projectId }: { projectId: string }) {
       openExport: () => setExportOpen(true),
       openShortcuts: () => setShortcutsOpen(true),
     };
-  }, [state, projectId, player, jobs, selectedId, dispatch, send, snap, pxPerFrame, setPxPerFrame, fitRequest, toast]);
+  }, [state, projectId, player, jobs, selectedId, dispatch, send, seenRevision, markAgentSeen, snap, pxPerFrame, setPxPerFrame, fitRequest, toast]);
 
   useShortcuts(value);
 
@@ -301,15 +440,34 @@ export function Editor({ projectId }: { projectId: string }) {
             </IconButton>
           </div>
           <div className={styles.grow} />
+          <AgentStatusBadge agent={agent} connected={connected} />
           <Button variant="primary" onClick={value.openExport} disabled={value.clips.length === 0}>
             <Download size={18} aria-hidden />
             {exportJob ? `Đang xuất ${exportJob.progress ?? 0}%` : "Xuất video"}
           </Button>
         </header>
         <main className={styles.workspace}>
-          <Library />
+          <section className={styles.panelLeft} aria-label="Thư viện và transcript">
+            <Tabs
+              label="Thông tin bên trái"
+              defaultValue="library"
+              tabs={[
+                { value: "library", title: "Thư viện", content: <Library /> },
+                { value: "transcript", title: "Transcript", content: <TranscriptPanel /> },
+              ]}
+            />
+          </section>
           <Preview />
-          <Properties />
+          <section className={styles.panelRight} aria-label="Thuộc tính và hoạt động">
+            <Tabs
+              label="Thông tin bên phải"
+              defaultValue="properties"
+              tabs={[
+                { value: "properties", title: "Thuộc tính", content: <Properties /> },
+                { value: "activity", title: "Hoạt động", content: <Activity /> },
+              ]}
+            />
+          </section>
           <Timeline />
         </main>
         <ExportDialog open={exportOpen} onOpenChange={setExportOpen} />

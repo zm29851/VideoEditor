@@ -15,8 +15,12 @@ export default defineConfig({
       "/api": {
         target: `http://127.0.0.1:${process.env.VE_MCP_PORT ?? 8765}`,
         changeOrigin: true,
+        ws: true,
         headers: { authorization: `Bearer ${token}` },
-        configure: (proxy) => proxy.on("proxyReq", (request) => request.removeHeader("origin")),
+        configure: (proxy) => {
+          proxy.on("proxyReq", (request) => request.removeHeader("origin"));
+          proxy.on("proxyReqWs", (request) => request.removeHeader("origin"));
+        },
       },
     },
   },
