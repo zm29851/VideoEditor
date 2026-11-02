@@ -1,7 +1,8 @@
 node_modules/
-projects/
+/projects/
 web/dist/
 *.log
+.DS_Store
 *.mov
 *.MOV
 *.mp4

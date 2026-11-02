@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, parse, sep } from "node:path";
 import type { CommandEngine } from "../engine.ts";
@@ -65,34 +65,75 @@ export class Workspace {
   readonly agent = new AgentPresence();
   readonly mediaDirs: string[];
   #engines = new Map<string, CommandEngine>();
+  /** Projects kept in a folder the person chose. Every other project is a folder inside root. */
+  #locations: Map<string, string>;
+  #locationsPath: string;
 
   constructor(root: string, mediaDirs: string[] = defaultMediaDirs()) {
     mkdirSync(root, { recursive: true });
     this.root = realpathSync(root);
     this.jobs = new JobQueue(join(this.root, ".jobs.json"));
     this.mediaDirs = mediaDirs.filter(existsSync).map((dir) => realpathSync(dir));
+    this.#locationsPath = join(this.root, ".locations.json");
+    this.#locations = new Map(existsSync(this.#locationsPath) ? Object.entries(JSON.parse(readFileSync(this.#locationsPath, "utf8")) as Record<string, string>) : []);
   }
 
   projectRoot(projectId: string): string {
     if (!PROJECT_ID.test(projectId)) {
       throw new Error(`Tên project "${projectId}" không hợp lệ: chỉ dùng chữ, số, "_" và "-", tối đa 64 ký tự.`);
     }
-    return join(this.root, projectId);
+    return this.#locations.get(projectId) ?? join(this.root, projectId);
   }
 
   list(): string[] {
-    return readdirSync(this.root, { withFileTypes: true })
+    const inRoot = readdirSync(this.root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && PROJECT_ID.test(entry.name))
-      .filter((entry) => existsSync(projectPaths(join(this.root, entry.name)).project))
       .map((entry) => entry.name);
+    return [...new Set([...inRoot, ...this.#locations.keys()])].filter((id) => existsSync(projectPaths(this.projectRoot(id)).project));
   }
 
-  create(projectId: string, options: { name?: string; width?: number; height?: number; fps?: FrameRate }): CommandEngine {
-    const { width = 1920, height = 1080 } = options;
+  /** A project can live in any writable folder the person may open, as long as it stays apart from other projects. */
+  #resolveProjectFolder(path: string): string {
+    if (!isAbsolute(path)) throw new Error(`Cần đường dẫn tuyệt đối, nhận được "${path}".`);
+    if (!existsSync(path) || !statSync(path).isDirectory()) throw new Error(`Không tìm thấy thư mục "${path}". Hãy tạo thư mục trước rồi chọn lại.`);
+    const real = realpathSync(path);
+    if (!this.mediaDirs.some((dir) => isInside(dir, real))) {
+      throw new Error(`"${path}" nằm ngoài các thư mục được phép: ${this.mediaDirs.join(", ")}.`);
+    }
+    if (parse(real).root === real || real === realpathSync(homedir())) {
+      throw new Error(`Không dùng "${real}" làm thư mục project vì nó chứa quá nhiều thứ khác. Hãy chọn hoặc tạo một thư mục con.`);
+    }
+    for (const other of [this.root, ...this.list().map((id) => this.projectRoot(id))]) {
+      if (isInside(other, real) || isInside(real, other)) {
+        throw new Error(`Không dùng "${real}" được vì nó trùng với nơi lưu project khác: "${other}". Hãy chọn thư mục khác.`);
+      }
+    }
+    try {
+      accessSync(real, constants.W_OK);
+    } catch {
+      throw new Error(`Không có quyền ghi vào "${real}". Hãy chọn thư mục khác.`);
+    }
+    return real;
+  }
+
+  #saveLocations(): void {
+    const temporary = `${this.#locationsPath}.tmp`;
+    writeFileSync(temporary, JSON.stringify(Object.fromEntries(this.#locations), null, 2));
+    renameSync(temporary, this.#locationsPath);
+  }
+
+  create(projectId: string, options: { name?: string; width?: number; height?: number; fps?: FrameRate; folder?: string }): CommandEngine {
+    const { folder, ...details } = options;
+    const { width = 1920, height = 1080 } = details;
     if (width % 2 !== 0 || height % 2 !== 0 || width < 16 || height < 16 || width > 7680 || height > 7680) {
       throw new Error(`Khung ${width} × ${height} không hợp lệ: chiều rộng và chiều cao phải là số chẵn, từ 16 đến 7680.`);
     }
-    const engine = createProjectFolder(this.projectRoot(projectId), { name: projectId, ...options });
+    this.projectRoot(projectId);
+    if (this.list().includes(projectId)) throw new Error(`Đã có project "${projectId}" tại ${this.projectRoot(projectId)}.`);
+    const root = folder === undefined ? join(this.root, projectId) : this.#resolveProjectFolder(folder);
+    const engine = createProjectFolder(root, { name: projectId, ...details });
+    // A location left over from a folder that is gone must not outlive the new project.
+    if (folder === undefined ? this.#locations.delete(projectId) : this.#locations.set(projectId, root)) this.#saveLocations();
     this.#engines.set(projectId, engine);
     return engine;
   }
@@ -159,6 +200,13 @@ export class Workspace {
     entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name, "vi"));
     const parent = this.mediaDirs.includes(real) ? undefined : dirname(real);
     return { path: real, ...(parent ? { parent } : {}), entries };
+  }
+
+  /** Where picking a file starts for this project. A folder outside the allowed ones starts from the top instead. */
+  browseProject(projectId: string): MediaListing {
+    this.engine(projectId);
+    const root = realpathSync(this.projectRoot(projectId));
+    return this.browseMedia(this.mediaDirs.some((dir) => isInside(dir, root)) ? root : undefined);
   }
 
   startImport(projectId: string, path: string): Job {

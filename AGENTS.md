@@ -75,6 +75,7 @@ web/src/projects/      Danh sách project, tạo project
 web/src/editor/        Màn hình dựng: Editor, Library, TranscriptPanel, Preview, Timeline, Properties, Activity, AgentStatusBadge, ExportDialog, Shortcuts
 web/src/editor/player.ts       Phát timeline trên hai thẻ video
 web/src/editor/timelineOps.ts  Tính toán di chuyển, trim, bám điểm cắt, có unit test
+web/src/editor/importSelection.ts  Chọn nhiều file để import, có unit test
 web/src/editor/rebase.ts       Gửi lại thao tác khi gặp revision cũ
 web/src/editor/agentNotice.ts  Chọn các thay đổi của agent chưa xem, mô tả thay đổi
 web/src/ui/            Component dùng chung, bọc Radix
@@ -96,6 +97,8 @@ projects/<id>/
   previews/        Kết quả render_preview
   exports/         Kết quả export
 ```
+
+Khi tạo project có thể chọn một thư mục có sẵn thay cho `projects/<id>/`. Vị trí được ghi ở `projects/.locations.json`, còn token và danh sách job vẫn ở `projects/`. Thư mục phải ghi được, nằm trong phạm vi `VE_MEDIA_DIRS`, không phải gốc ổ đĩa hay thư mục home, và không trùng hoặc lồng với nơi lưu project khác. Đường dẫn trong `project.json` là tuyệt đối, nên chuyển thư mục đi thì project không còn trong danh sách. Hộp thoại thêm video mở sẵn thư mục project.
 
 ## Lệnh thường dùng
 
@@ -174,6 +177,7 @@ File âm thanh (`.mp3`, `.wav`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`) đư�
 - Hoàn tác riêng một lô (`CommandEngine.revert`) giữ các thay đổi sau đó, và được ghi thành một lô mới có `revertsRevision`, nên Hoàn tác thường lấy lại được. Nếu thay đổi sau đã sửa đúng trường mà lô đó đổi, hoặc kết quả bị chồng clip, lệnh bị từ chối và không đổi gì.
 - Lịch sử ghi rõ `actor` là `user` hay `agent`, kèm mô tả.
 - Clip trên cùng một track không được chồng nhau.
+- `trim_clip` với `ripple: true` kéo dài clip qua clip bên cạnh: mọi clip sau trên track, và trên `alsoTrackIds`, lùi cùng một lượng vừa đủ để hết chồng. Không có `ripple` thì vẫn báo lỗi chồng clip.
 - Thêm asset không undo được, để undo không làm mất media.
 - `delete_ranges` xóa nhiều đoạn trong một lệnh. Mọi đoạn đều tính theo timeline trước lệnh đó, nên không phải tự trừ dần. Mảnh đầu của clip giữ id, như khi cắt.
 - Thông báo lỗi phải đủ rõ để người hoặc agent tự sửa, và viết bằng tiếng Việt.
@@ -234,6 +238,7 @@ Cài đặt iPhone khuyến nghị: 1080p 30 fps, tắt HDR, tắt FPS tự đ�
 | Không thấy khoảng lặng | Video quay ngoài đường có tiếng nền to hơn -35 dB, nên `detect_silence` không thấy gì. Agent nâng `noiseDb` lên, hoặc dùng `speechGaps` của `detect_silence`, là các đoạn không có lời theo transcript. Video iPhone quay ngoài đường vẫn không thấy khoảng lặng ở -25 dB nhưng có `speechGaps`. Đoạn không lời có thể vẫn có âm thanh đáng giữ, nên phải nghe lại |
 | Nhiều lớp khi xem trước | Mỗi lớp là một thẻ video riêng và được kéo lại khi lệch quá 0,1 giây, nên có thể lệch vài frame so với track chính lúc phát. Chưa đo trên video thật nhiều lớp. Bản xuất không bị |
 | Thư viện zod | `npm audit` báo một lỗi mức cao ở zod 3: dữ liệu quá lớn có thể làm tốn bộ nhớ. Rủi ro thấp vì mọi yêu cầu cần token và thân yêu cầu tối đa 4 MB. Bản sửa là zod 4, đổi phiên bản lớn nên làm riêng |
+| Chuyển thư mục project | Vị trí và đường dẫn master, proxy đều là tuyệt đối, nên chuyển thư mục sang chỗ khác sẽ mất project khỏi danh sách. Chưa có chức năng mở lại |
 | Màu HDR | Mới xem một frame từ iPhone thật, chưa so trực tiếp với bản gốc |
 
 ## Tiến độ dự án
@@ -268,7 +273,7 @@ Trạng thái: `[x]` đã xong và đã kiểm chứng, `[ ]` chưa làm.
 - [x] Công cụ sửa, `apply_batch`, `undo`, `redo`
 - [x] Job nền: `import_asset`, `render_preview`, `export_video`, `get_job_status`
 - [x] Claude Code tự cắt và export một video mẫu, kết quả đúng từng frame
-- [ ] Push nhánh lên GitHub
+- [x] Push nhánh lên GitHub
 - [x] Commit và merge nhánh `phase-1` vào `main` trên máy
 
 ### Phase 2: Giao diện cơ bản
@@ -323,7 +328,7 @@ Trạng thái: `[x]` đã xong và đã kiểm chứng, `[ ]` chưa làm.
 - [x] Rà soát bảo mật toàn bộ server
 - [x] Rà soát accessibility theo DESIGN.md
 - [x] Hoàn thiện tài liệu cài đặt và sử dụng
-- [ ] Phát hành bản 1.0
+- [x] Phát hành bản 1.0
 
 ### Chưa làm trong bản đầu
 

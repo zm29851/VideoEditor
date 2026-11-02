@@ -65,6 +65,37 @@
   color: var(--color-primary);
 }
 
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.checkboxBox {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-4);
+  height: var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.checkbox[data-state="checked"] .checkboxBox,
+.checkbox[data-state="indeterminate"] .checkboxBox {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.checkboxMark {
+  display: inline-flex;
+}
+
 .tooltip {
   display: flex;
   align-items: center;

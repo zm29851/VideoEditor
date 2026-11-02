@@ -1,5 +1,5 @@
-import { Dialog as RadixDialog, Progress, Select as RadixSelect, Slider as RadixSlider, Tabs as RadixTabs, Toast, Tooltip } from "radix-ui";
-import { Check, ChevronDown, X } from "lucide-react";
+import { Checkbox as RadixCheckbox, Dialog as RadixDialog, Progress, Select as RadixSelect, Slider as RadixSlider, Tabs as RadixTabs, Toast, Tooltip } from "radix-ui";
+import { Check, ChevronDown, Minus, X } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type ButtonHTMLAttributes,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -56,6 +57,30 @@ export function IconButton({ label, shortcut, pressed, className, ...props }: Ic
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
+  );
+}
+
+/** The whole control is the click target, so its children name it and a long row stays one tab stop. */
+export function Checkbox({
+  checked,
+  onClick,
+  className,
+  children,
+}: {
+  checked: boolean | "indeterminate";
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <RadixCheckbox.Root checked={checked} onClick={onClick} className={`${styles.checkbox} ${className ?? ""}`}>
+      <span className={styles.checkboxBox}>
+        <RadixCheckbox.Indicator className={styles.checkboxMark}>
+          {checked === "indeterminate" ? <Minus size={14} aria-hidden /> : <Check size={14} aria-hidden />}
+        </RadixCheckbox.Indicator>
+      </span>
+      {children}
+    </RadixCheckbox.Root>
   );
 }
 

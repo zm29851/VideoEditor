@@ -121,6 +121,35 @@ describe("helpers", () => {
   });
 });
 
+describe("trimming that pushes later clips", () => {
+  const before = clip("a", 0, 100, 50);
+  const next = clip("b", 110, 50);
+
+  it("uses the empty space first, then pushes just far enough", () => {
+    expect(resolveTrim(before, asset, [next], "end", 105, undefined, true)).toMatchObject({ duration: 105, push: 0 });
+    expect(resolveTrim(before, asset, [next], "end", 130, undefined, true)).toMatchObject({ duration: 130, delta: 30, push: 20, pushFrom: 100 });
+  });
+
+  it("stops only at the end of the source", () => {
+    expect(resolveTrim(before, asset, [next], "end", 9000, undefined, true)).toMatchObject({ duration: 250, push: 140 });
+  });
+
+  it("keeps a start edge against the clip before and grows towards the later clips", () => {
+    const middle = clip("m", 100, 50, 40);
+    const result = resolveTrim(middle, asset, [before, clip("c", 150, 10)], "start", 70, undefined, true);
+    expect(result).toEqual({ start: 100, sourceIn: 10, duration: 80, delta: -30, push: 30, pushFrom: 150 });
+  });
+
+  it("stops a start edge at the first frame of the source", () => {
+    expect(resolveTrim(clip("m", 100, 50, 10), asset, [before], "start", 0, undefined, true)).toMatchObject({ sourceIn: 0, delta: -10 });
+  });
+
+  it("still shortens without pushing anything", () => {
+    expect(resolveTrim(before, asset, [next], "end", 60, undefined, true)).toMatchObject({ duration: 60, push: 0 });
+    expect(resolveTrim(before, asset, [next], "start", 20, undefined, true)).toMatchObject({ start: 20, sourceIn: 70, duration: 80, push: 0 });
+  });
+});
+
 describe("tracks", () => {
   const video = { id: "a", hasVideo: true, hasAudio: true, durationFrames: 300 } as Asset;
   const sound = { id: "s", hasVideo: false, hasAudio: true, durationFrames: 300 } as Asset;

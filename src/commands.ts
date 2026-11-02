@@ -214,8 +214,12 @@ export function applyCommand(project: Project, command: Command): string[] {
     case "trim_clip": {
       const { track, clip } = findClip(project, command.clipId);
       const before = clip.duration;
+      const oldEnd = clip.start + clip.duration;
+      const others = track.clips.filter((other) => other !== clip);
       if (command.edge === "start") {
-        clip.start += command.delta;
+        // With a neighbour in the way the start stays against it, and the clip grows towards the later clips.
+        const previousEnd = others.filter((other) => other.start < clip.start).reduce((end, other) => Math.max(end, other.start + other.duration), 0);
+        clip.start = command.ripple && command.delta < 0 ? Math.max(clip.start + command.delta, previousEnd) : clip.start + command.delta;
         if (isMediaClip(clip)) clip.sourceIn += command.delta;
         clip.duration -= command.delta;
       } else {
@@ -231,6 +235,22 @@ export function applyCommand(project: Project, command: Command): string[] {
       // Keyframes stay on the same picture when the start moves.
       if (command.edge === "start" && clip.keyframes) {
         clip.keyframes = (command.delta > 0 ? sliceAllKeyframes(clip.keyframes, command.delta, before) : shiftKeyframes(clip.keyframes, -command.delta))!;
+      }
+      if (command.ripple) {
+        const later = others.filter((other) => other.start >= oldEnd);
+        const nextStart = later.reduce((start, other) => Math.min(start, other.start), Infinity);
+        const push = clip.start + clip.duration - nextStart;
+        if (push > 0) {
+          for (const other of later) other.start += push;
+          for (const id of command.alsoTrackIds) {
+            const linked = findTrack(project, id);
+            if (linked === track) continue;
+            for (const other of linked.clips) {
+              if (other.start >= oldEnd) other.start += push;
+            }
+            assertNoOverlap(linked);
+          }
+        }
       }
       assertNoOverlap(track);
       return [];

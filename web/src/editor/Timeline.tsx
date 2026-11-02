@@ -18,13 +18,15 @@ const PLAYHEAD_MARGIN_PX = 48;
 const TAIL_SHARE = 0.25;
 const MIN_CONTENT_FRAMES = 600;
 
-type Layout = { start: number; duration: number };
+type Layout = { start: number; duration: number; delta?: number; push?: number; pushFrom?: number };
 
 interface Drag {
   clipId: string;
   edge?: "start" | "end";
   layout: Layout;
   trackId: string;
+  /** Once the timeline moves on, the push is already in the clips and must not be shown twice. */
+  revision: number;
 }
 
 /** The track row under the pointer, whichever element the pointer is captured by. */
@@ -240,6 +242,9 @@ export function Timeline() {
     element.addEventListener("pointercancel", up);
   };
 
+  // Subtitles stay with the speech on the main track. Music and other pictures keep their place.
+  const pushedWith = (trackId: string) => (trackId === mainTrackId ? tracks.filter((track) => track.kind === "text").map((track) => track.id) : []);
+
   const startClipDrag = (event: ReactPointerEvent<HTMLElement>, clip: Clip, track: Track) => {
     if (event.button !== 0) return;
     event.stopPropagation();
@@ -266,11 +271,11 @@ export function Timeline() {
       const frames = Math.round(dx / pxPerFrame);
       if (edge) {
         const reference = edge === "start" ? clip.start : clipEnd(clip);
-        layout = resolveTrim(clip, asset, others, edge, reference + frames, snapOptions);
+        layout = resolveTrim(clip, asset, others, edge, reference + frames, snapOptions, true);
       } else {
         layout = { start: resolveMove(others, clip.duration, clip.start + frames, snapOptions), duration: clip.duration };
       }
-      setDrag({ clipId: clip.id, ...(edge ? { edge } : {}), layout, trackId: target.id });
+      setDrag({ clipId: clip.id, ...(edge ? { edge } : {}), layout, trackId: target.id, revision: project.revision });
     };
     // On the window: moving to another track remounts the clip, and the listeners must outlive that.
     const finish = () => {
@@ -286,12 +291,11 @@ export function Timeline() {
       finish();
       let command: CommandInput | undefined;
       let label = "";
-      if (edge === "start" && layout.start !== clip.start) {
-        command = { type: "trim_clip", clipId: clip.id, edge, delta: layout.start - clip.start };
-        label = "Cắt bớt đầu clip";
-      } else if (edge === "end" && layout.duration !== clip.duration) {
-        command = { type: "trim_clip", clipId: clip.id, edge, delta: layout.duration - clip.duration };
-        label = "Cắt bớt cuối clip";
+      if (edge && layout.delta) {
+        const grows = layout.duration > clip.duration;
+        const alsoTrackIds = (layout.push ?? 0) > 0 ? pushedWith(track.id) : [];
+        command = { type: "trim_clip", clipId: clip.id, edge, delta: layout.delta, ripple: true, alsoTrackIds };
+        label = `${grows ? "Kéo dài" : "Cắt bớt"} ${edge === "start" ? "đầu" : "cuối"} clip`;
       } else if (!edge && (layout.start !== clip.start || target !== track)) {
         command = { type: "move_clip", clipId: clip.id, start: layout.start, ...(target !== track ? { trackId: target.id } : {}) };
         label = target !== track ? "Chuyển track" : "Di chuyển clip";
@@ -431,7 +435,12 @@ export function Timeline() {
                     ? tracks.flatMap((other) => (other.id === track.id ? [] : other.clips.filter((clip) => clip.id === drag.clipId).map((clip) => ({ clip, owner: other }))))
                     : []),
                 ];
-                const layoutOf = (clip: Clip): Layout => (drag?.clipId === clip.id ? drag.layout : clip);
+                const pushesThisRow = drag !== undefined && drag.revision === project.revision && (drag.trackId === track.id || pushedWith(drag.trackId).includes(track.id));
+                const layoutOf = (clip: Clip): Layout => {
+                  if (drag?.clipId === clip.id) return drag.layout;
+                  const { push, pushFrom } = drag?.layout ?? {};
+                  return pushesThisRow && push && pushFrom !== undefined && clip.start >= pushFrom ? { start: clip.start + push, duration: clip.duration } : clip;
+                };
                 const agentNote = (clip: Clip) => (editor.agentClips.has(clip.id) ? ", agent vừa sửa" : "");
                 const ghostHere = ghost?.trackId === track.id && <Ghost start={ghost.start} duration={ghost.duration} />;
                 if (track.kind === "text") {

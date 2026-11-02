@@ -12,6 +12,7 @@ const LIST: Array<[string, string]> = [
   ["Đầu, cuối timeline", "Home End"],
   ["Cắt clip tại playhead", "S"],
   ["Bỏ phần trước, sau playhead", "[ ]"],
+  ["Kéo dài đầu, cuối clip, đẩy clip sau", "⌥[ ⌥]"],
   ["Di chuyển clip một frame", ", ."],
   ["Di chuyển clip mười frame", "⇧, ⇧."],
   ["Chuyển clip lên, xuống track khác", "⌥↑ ⌥↓"],
@@ -69,7 +70,8 @@ export function useShortcuts(editor: EditorContextValue | null): void {
       const command = event.metaKey || event.ctrlKey;
       const secondFrames = Math.round(e.project.fps.num / e.project.fps.den);
       // Option changes the character a key types on a Mac, so this one is read from the physical key.
-      const key = event.altKey && event.code === "KeyZ" ? "z" : event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      const physical: Record<string, string> = { KeyZ: "z", BracketLeft: "[", BracketRight: "]" };
+      const key = event.altKey && physical[event.code] ? physical[event.code]! : event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
       const actions: Record<string, () => void> = command
         ? {
@@ -94,8 +96,8 @@ export function useShortcuts(editor: EditorContextValue | null): void {
             End: () => player.seek(player.duration),
             s: e.cut,
             t: e.addText,
-            "[": () => e.trimToPlayhead("start"),
-            "]": () => e.trimToPlayhead("end"),
+            "[": () => (event.altKey ? e.extendClip("start") : e.trimToPlayhead("start")),
+            "]": () => (event.altKey ? e.extendClip("end") : e.trimToPlayhead("end")),
             ",": () => e.nudge(-1),
             ".": () => e.nudge(1),
             "<": () => e.nudge(-10),

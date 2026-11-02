@@ -185,6 +185,10 @@ export const Command = z.discriminatedUnion("type", [
     edge: z.enum(["start", "end"]),
     /** Positive moves the edge later, negative moves it earlier. */
     delta: z.number().int(),
+    /** Growing into a neighbour pushes the clips after it back, just far enough, instead of failing. */
+    ripple: z.boolean().default(false),
+    /** Other tracks pushed by the same amount, so subtitles stay with the speech. */
+    alsoTrackIds: z.array(z.string()).default([]),
   }),
   z.object({
     type: z.literal("move_clip"),

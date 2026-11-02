@@ -43,6 +43,7 @@ const CreateProject = z.object({
   width: z.number().int().positive().max(7680),
   height: z.number().int().positive().max(7680),
   fps: FrameRate.refine((fps) => fps.num / fps.den >= 1 && fps.num / fps.den <= 120, "fps phải từ 1 đến 120").optional(),
+  folder: z.string().min(1).optional(),
 });
 const Batch = z.object({
   baseRevision: z.number().int().nonnegative(),
@@ -77,6 +78,7 @@ function listProjects(workspace: Workspace): object[] {
       return {
         id,
         name: project.name,
+        folder: workspace.projectRoot(id),
         width: project.width,
         height: project.height,
         fps: project.fps,
@@ -99,7 +101,8 @@ async function route(
   const parts = url.pathname.split("/").slice(2).map(decodeURIComponent);
 
   if (parts[0] === "media" && parts.length === 1 && method === "GET") {
-    return sendJson(res, 200, workspace.browseMedia(url.searchParams.get("path") ?? undefined));
+    const startFrom = url.searchParams.get("project");
+    return sendJson(res, 200, startFrom ? workspace.browseProject(startFrom) : workspace.browseMedia(url.searchParams.get("path") ?? undefined));
   }
 
   if (parts[0] !== "projects") throw new ApiError(404, "Không có đường dẫn này.");
@@ -109,7 +112,7 @@ async function route(
     if (method === "POST") {
       const body = CreateProject.parse(await readBody());
       if (workspace.list().includes(body.id)) throw new ApiError(409, `Đã có project "${body.id}".`);
-      const engine = workspace.create(body.id, { name: body.name, width: body.width, height: body.height, ...(body.fps ? { fps: body.fps } : {}) });
+      const engine = workspace.create(body.id, { name: body.name, width: body.width, height: body.height, ...(body.fps ? { fps: body.fps } : {}), ...(body.folder ? { folder: body.folder } : {}) });
       return sendJson(res, 201, { id: body.id, ...projectState(engine) });
     }
   }

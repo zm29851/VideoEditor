@@ -37,6 +37,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
 export interface ProjectSummary {
   id: string;
   name: string;
+  folder: string;
   width: number;
   height: number;
   fps: FrameRate;
@@ -74,7 +75,7 @@ const base = (id: string) => `/projects/${encodeURIComponent(id)}`;
 
 export const api = {
   listProjects: () => request<ProjectSummary[]>("/projects"),
-  createProject: (body: { id: string; name: string; width: number; height: number; fps: FrameRate }) =>
+  createProject: (body: { id: string; name: string; width: number; height: number; fps: FrameRate; folder?: string }) =>
     request<ProjectState & { id: string }>("/projects", body),
   getProject: (id: string) => request<ProjectState>(base(id)),
   batch: (id: string, baseRevision: number, label: string, commands: CommandInput[]) =>
@@ -83,6 +84,7 @@ export const api = {
   redo: (id: string, baseRevision: number) => request<ProjectState>(`${base(id)}/redo`, { baseRevision }),
   revert: (id: string, baseRevision: number, revision: number) =>
     request<ProjectState>(`${base(id)}/revert`, { baseRevision, revision }),
+  browseProjectMedia: (id: string) => request<MediaListing>(`/media?project=${encodeURIComponent(id)}`),
   browseMedia: (path?: string) =>
     request<MediaListing>(`/media${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   checkImport: (id: string, path: string) => request<ImportCheck>(`${base(id)}/import/check`, { path }),

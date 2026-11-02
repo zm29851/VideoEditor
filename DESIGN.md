@@ -197,6 +197,27 @@ Cần giá trị mới thì thêm biến vào `tokens.css`, không viết trực
 - Transition nằm trên clip phía sau của điểm cắt và không đổi độ dài timeline. Nếu không đủ đoạn dư để hòa tan thì nói rõ là clip chỉ hiện dần.
 - Khi chưa chọn clip, panel Thuộc tính cho đổi khung hình của project.
 
+### Kéo dài clip
+
+- Kéo cạnh clip ra ngoài mà chạm clip bên cạnh thì không bị chặn: các clip phía sau được đẩy lùi vừa đủ, khoảng trống có sẵn được dùng trước. Khi đang kéo, timeline hiện vị trí mới của các clip bị đẩy.
+- Kéo đầu clip ra sớm hơn clip trước thì clip giữ nguyên chỗ bắt đầu, phần thêm làm clip dài về phía sau.
+- Giới hạn duy nhất là đoạn còn lại trong video nguồn.
+- Clip trên track video đầu tiên đẩy cả track chữ để phụ đề đi cùng lời nói. Nhạc và các track video khác giữ nguyên.
+- Phím thay thế là ⌥[ và ⌥]: kéo dài đầu hoặc cuối clip đang chọn thêm một frame.
+
+### Thư mục project
+
+- Hộp thoại Project mới có mục Thư mục project, mặc định là nơi lưu của app. Bấm Chọn thư mục để duyệt và bấm Dùng thư mục này. Giao diện chỉ chọn được thư mục đã có.
+- Danh sách project hiện đường dẫn thư mục dưới tên project.
+- Hộp thoại thêm video luôn mở sẵn thư mục project. Nếu thư mục nằm ngoài phạm vi được phép thì mở danh sách thư mục.
+
+### Thêm nhiều file
+
+- Trong hộp thoại thêm video, bấm dòng file là chọn hoặc bỏ chọn, Shift và bấm để chọn cả đoạn, có ô Chọn tất cả cho thư mục đang xem. Bấm thư mục là mở thư mục. Chuyển thư mục không mất các file đã chọn.
+- File đã có trong Thư viện hoặc đang import được ghi rõ và không nằm trong Chọn tất cả, nhưng vẫn chọn tay được.
+- Bấm Thêm thì kiểm tra hết các file trước, có tiến độ. Nếu không có gì cần xem thì import luôn. Có cảnh báo hoặc file không đọc được thì hiện một màn hình gộp, không hỏi từng file. File không đọc được luôn bị bỏ qua.
+- Trong Thư viện, các file đang chờ gộp thành một dòng có nút Hủy tất cả. File đang chạy và file lỗi có dòng riêng.
+
 ### Hành động
 
 - Việc đang chạy có nút Hủy. Hủy xong không để lại file dở.
@@ -226,7 +247,7 @@ Danh sách này được chốt khi bắt đầu Phase 2. Bất kỳ thư viện
 
 | Nhu cầu | Thư viện | Trạng thái |
 |---|---|---|
-| Dialog, slider, tooltip, toast, progress, tabs, select | Radix UI Primitives (`radix-ui`) | Đã chốt |
+| Dialog, slider, tooltip, toast, progress, tabs, select, checkbox | Radix UI Primitives (`radix-ui`) | Đã chốt |
 | Biểu tượng | `lucide-react` | Đã chốt |
 | Font | `@fontsource/be-vietnam-pro`, chạy được khi không có mạng | Đã chốt |
 | Style | CSS Modules kèm `tokens.css` | Đã chốt |

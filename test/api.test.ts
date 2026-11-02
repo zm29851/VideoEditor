@@ -1,6 +1,6 @@
 import type { MediaClip } from "../src/schema.ts";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startMcpHttpServer, type McpHttpServer } from "../src/mcp/http.ts";
@@ -155,6 +155,66 @@ describe("media folders", () => {
     const response = await api(`/media?path=${encodeURIComponent(base)}`);
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toContain("nằm ngoài");
+  });
+});
+
+describe("a project in a folder the person chose", () => {
+  const media = () => join(base, "media");
+
+  it("keeps everything there and is found again after a restart", async () => {
+    const folder = mkdtempSync(join(media(), "du-an-"));
+    const response = await api("/projects", { body: { id: "chon-thu-muc", name: "Chọn thư mục", width: 640, height: 360, folder } });
+    expect(response.status).toBe(201);
+    expect(existsSync(join(folder, "project.json"))).toBe(true);
+    expect(existsSync(join(base, "projects", "chon-thu-muc"))).toBe(false);
+
+    const listed = (await ok("/projects")) as Array<{ id: string; folder: string }>;
+    expect(listed.find((project) => project.id === "chon-thu-muc")?.folder).toBe(realpathSync(folder));
+
+    const reopened = new Workspace(join(base, "projects"), [media()]);
+    expect(reopened.list()).toContain("chon-thu-muc");
+    expect(reopened.engine("chon-thu-muc").project.name).toBe("Chọn thư mục");
+  });
+
+  it("starts picking files from the project's folder, or from the top when that is not allowed", async () => {
+    const folder = mkdtempSync(join(media(), "mo-san-"));
+    await ok("/projects", { body: { id: "mo-san", name: "Mở sẵn", width: 640, height: 360, folder } });
+    expect((await ok("/media?project=mo-san")).path).toBe(realpathSync(folder));
+    await ok("/projects", { body: { id: "ngoai-pham-vi", name: "Ngoài", width: 640, height: 360 } });
+    expect((await ok("/media?project=ngoai-pham-vi")).path).toBeUndefined();
+  });
+
+  it("leaves other files in the folder alone", () => {
+    const folder = mkdtempSync(join(media(), "co-san-"));
+    writeFileSync(join(folder, "ghi-chu.txt"), "giữ nguyên");
+    new Workspace(join(base, "projects"), [media()]).create("co-san", { folder });
+    expect(readFileSync(join(folder, "ghi-chu.txt"), "utf8")).toBe("giữ nguyên");
+  });
+
+  it("refuses folders that cannot belong to one project", () => {
+    const workspace = new Workspace(join(base, "projects"), ["/"]);
+    const used = mkdtempSync(join(media(), "da-dung-"));
+    workspace.create("da-dung", { folder: used });
+    expect(() => workspace.create("a1", { folder: "tuong-doi" })).toThrow("tuyệt đối");
+    expect(() => workspace.create("a2", { folder: join(media(), "khong-co") })).toThrow("Không tìm thấy");
+    expect(() => workspace.create("a3", { folder: "/" })).toThrow("thư mục con");
+    expect(() => workspace.create("a4", { folder: homedir() })).toThrow("thư mục con");
+    expect(() => workspace.create("a5", { folder: used })).toThrow("trùng");
+    expect(() => workspace.create("a6", { folder: join(base, "projects") })).toThrow("trùng");
+    expect(() => workspace.create("a7", { folder: base })).toThrow("trùng");
+    expect(() => new Workspace(join(base, "projects"), [media()]).create("a8", { folder: base })).toThrow("nằm ngoài");
+    expect(() => workspace.create("da-dung", {})).toThrow("Đã có project");
+    expect(workspace.list().filter((id) => /^a\d$/.test(id))).toEqual([]);
+  });
+
+  it("makes the same id free again once its folder is gone", () => {
+    const folder = mkdtempSync(join(media(), "mat-"));
+    const workspace = new Workspace(join(base, "projects"), [media()]);
+    workspace.create("mat", { folder });
+    rmSync(folder, { recursive: true });
+    expect(new Workspace(join(base, "projects"), [media()]).list()).not.toContain("mat");
+    workspace.create("mat", {});
+    expect(new Workspace(join(base, "projects"), [media()]).projectRoot("mat")).toBe(join(realpathSync(join(base, "projects")), "mat"));
   });
 });
 

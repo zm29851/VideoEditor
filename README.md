@@ -22,12 +22,14 @@ npm start
 
 Lệnh này build giao diện rồi chạy server. Mở đường dẫn có `?token=...` mà server in ra. Trình duyệt sẽ giữ token trong cookie nên những lần sau chỉ cần mở `http://127.0.0.1:8765`.
 
+Khi tạo project, có thể chọn một thư mục có sẵn làm thư mục project: dữ liệu project, bản xem trước và video xuất nằm ở đó, và hộp thoại thêm video mở sẵn thư mục này. Không chọn thì project nằm trong `VE_PROJECTS_DIR`. Mã nguồn app và token vẫn ở chỗ cũ.
+
 Bấm `?` trong màn hình dựng để xem phím tắt. Video và âm thanh chọn được từ mọi thư mục trên máy, file gốc không bị sao chép hay sửa. Muốn giới hạn thì đặt `VE_MEDIA_DIRS`.
 
 ### Một lượt dựng
 
 1. Bấm **Project mới**, đặt tên, chọn khung hình và fps. Fps không đổi được sau khi tạo, nên chọn đúng fps lúc quay.
-2. Bấm **Thêm video hoặc âm thanh**. Video chuyển sang fps của project và tạo bản xem trước, có tiến độ trong Thư viện và có thể hủy.
+2. Bấm **Thêm video hoặc âm thanh**, chọn một hoặc nhiều file (Shift và bấm để chọn cả đoạn, hoặc Chọn tất cả), rồi bấm Thêm. Các file được import lần lượt. Video chuyển sang fps của project và tạo bản xem trước, có tiến độ trong Thư viện và có thể hủy.
 3. Kéo video xuống timeline, cắt bằng `S`, xóa bằng `Delete`, xóa và dồn bằng `⇧Delete`.
 4. Tab **Transcript**: tạo transcript, chọn từ rồi `Delete` để cắt theo lời nói, hoặc bấm **Tạo phụ đề**.
 5. Chọn clip để chỉnh ở tab **Thuộc tính**: vị trí, cỡ, độ rõ, âm lượng, transition. Nút hình thoi đặt keyframe tại playhead.

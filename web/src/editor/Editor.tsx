@@ -46,6 +46,7 @@ export interface EditorContextValue {
   cut: () => void;
   remove: (ripple: boolean) => void;
   trimToPlayhead: (edge: "start" | "end") => void;
+  extendClip: (edge: "start" | "end") => void;
   nudge: (delta: number) => void;
   undo: () => void;
   redo: () => void;
@@ -355,6 +356,16 @@ export function Editor({ projectId }: { projectId: string }) {
         const delta = edge === "start" ? player.frame - clip.start : player.frame - (clip.start + clip.duration);
         if (delta === 0) return;
         void dispatch("Cắt bớt clip", [{ type: "trim_clip", clipId: clip.id, edge, delta }]);
+      },
+      extendClip: (edge) => {
+        const clip = clips.find((candidate) => candidate.id === selectedId);
+        if (!clip) {
+          toast("Hãy chọn một clip để kéo dài.");
+          return;
+        }
+        const owner = tracks.find((candidate) => candidate.clips.includes(clip));
+        const alsoTrackIds = owner?.id === track.id ? tracks.filter((candidate) => candidate.kind === "text").map((candidate) => candidate.id) : [];
+        void dispatch(`Kéo dài ${edge === "start" ? "đầu" : "cuối"} clip`, [{ type: "trim_clip", clipId: clip.id, edge, delta: edge === "start" ? -1 : 1, ripple: true, alsoTrackIds }]);
       },
       nudge: (delta) => {
         const clip = clips.find((candidate) => candidate.id === selectedId);

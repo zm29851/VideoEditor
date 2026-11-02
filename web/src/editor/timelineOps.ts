@@ -75,6 +75,11 @@ export interface TrimResult {
   /** Absent for text, which has no source. */
   sourceIn?: number;
   duration: number;
+  /** Only when pushing: how far the edge really moved, which a blocked start edge does not show. */
+  delta?: number;
+  /** Only when pushing: how far the clips from this frame on move back. */
+  push?: number;
+  pushFrom?: number;
 }
 
 /** Limits an edge to the source video, the neighbouring clips and a length of at least one frame. */
@@ -85,8 +90,10 @@ export function resolveTrim(
   edge: "start" | "end",
   desired: number,
   snap?: SnapOptions,
+  pushLater = false,
 ): TrimResult {
   const frame = snap ? snapFrame(desired, snap.targets, snap.tolerance) : desired;
+  if (pushLater) return resolvePushingTrim(clip, asset, others, edge, frame);
   if (edge === "start") {
     const previousEnd = others.filter((other) => clipEnd(other) <= clip.start).reduce((end, other) => Math.max(end, clipEnd(other)), 0);
     const earliest = isMediaClip(clip) ? Math.max(previousEnd, clip.start - clip.sourceIn) : previousEnd;
@@ -98,6 +105,33 @@ export function resolveTrim(
   const latest = isMediaClip(clip) && asset ? Math.min(nextStart, clip.start + asset.durationFrames - clip.sourceIn) : nextStart;
   const end = Math.max(Math.min(frame, latest), clip.start + 1);
   return { start: clip.start, ...(isMediaClip(clip) ? { sourceIn: clip.sourceIn } : {}), duration: end - clip.start };
+}
+
+/** As far as the source allows. A neighbour in the way moves back rather than stopping the edge. */
+function resolvePushingTrim(clip: Clip, asset: Asset | undefined, others: Clip[], edge: "start" | "end", frame: number): TrimResult {
+  const oldEnd = clipEnd(clip);
+  const nextStart = others.filter((other) => other.start >= oldEnd).reduce((start, other) => Math.min(start, other.start), Infinity);
+  const media = isMediaClip(clip);
+  let start = clip.start;
+  let delta: number;
+  if (edge === "start") {
+    const previousEnd = others.filter((other) => other.start < clip.start).reduce((end, other) => Math.max(end, clipEnd(other)), 0);
+    delta = Math.min(frame - clip.start, clip.duration - 1);
+    if (media) delta = Math.max(delta, -clip.sourceIn);
+    start = delta < 0 ? Math.max(clip.start + delta, previousEnd) : clip.start + delta;
+  } else {
+    const latest = media && asset ? clip.start + asset.durationFrames - clip.sourceIn : Infinity;
+    delta = Math.max(Math.min(frame, latest), clip.start + 1) - oldEnd;
+  }
+  const duration = edge === "start" ? clip.duration - delta : clip.duration + delta;
+  return {
+    start,
+    ...(media ? { sourceIn: edge === "start" ? clip.sourceIn + delta : clip.sourceIn } : {}),
+    duration,
+    delta,
+    push: Math.max(0, start + duration - nextStart),
+    pushFrom: oldEnd,
+  };
 }
 
 /** Whether a clip can be played by a track of this kind. */

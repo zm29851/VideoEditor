@@ -65,6 +65,8 @@ const ClipOp = {
     clipId: z.string(),
     edge: z.enum(["start", "end"]),
     delta: Time.describe("Positive moves the edge later, negative moves it earlier."),
+    ripple: z.boolean().default(false).describe("Growing into a neighbour pushes the later clips back, just far enough, instead of failing."),
+    alsoTrackIds: z.array(z.string()).default([]).describe("With ripple: other tracks pushed by the same amount, such as the subtitles. Leave music out."),
   },
   move_clip: {
     clipId: z.string(),
@@ -283,9 +285,13 @@ export function createMcpServer(workspace: Workspace): McpServer {
         width: z.number().int().positive().default(1920),
         height: z.number().int().positive().default(1080),
         fps: z.string().default("30").describe('Such as "24", "25", "30", "60", "29.97" or "30000/1001".'),
+        folder: z.string().optional().describe("Absolute path of an existing folder to keep this project in, when the person chose one. Everything the project makes goes there. Leave it out for the default place."),
       },
     },
-    guarded(({ projectId, width, height, fps }) => json(describeProject(workspace.create(projectId, { width, height, fps: parseFps(fps) }).project))),
+    guarded(({ projectId, width, height, fps, folder }) => {
+      const engine = workspace.create(projectId, { width, height, fps: parseFps(fps), ...(folder ? { folder } : {}) });
+      return json({ ...describeProject(engine.project), folder: workspace.projectRoot(projectId) });
+    }),
   );
 
   server.registerTool(

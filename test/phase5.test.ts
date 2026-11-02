@@ -149,6 +149,71 @@ describe("tracks and commands", () => {
     expect(() => engine.revert("user", engine.project.revision, second.revision)).toThrow(/đã được sửa sau đó/);
   });
 
+  describe("growing a clip into its neighbours", () => {
+    function setup() {
+      const engine = engineWith(asset("a"));
+      apply(
+        engine,
+        { type: "add_track", kind: "text", id: "subs" },
+        { type: "add_track", kind: "audio", id: "music" },
+        { type: "add_clip", trackId: "video_1", assetId: "a", sourceIn: 50, start: 0, duration: 100 },
+        { type: "add_clip", trackId: "video_1", assetId: "a", sourceIn: 200, start: 100, duration: 50 },
+        { type: "add_clip", trackId: "video_1", assetId: "a", sourceIn: 0, start: 170, duration: 10 },
+        { type: "add_text", trackId: "subs", start: 90, duration: 20, text: "giữa điểm cắt" },
+        { type: "add_text", trackId: "subs", start: 120, duration: 10, text: "phía sau" },
+        { type: "add_clip", trackId: "music", assetId: "a", start: 120, duration: 10 },
+      );
+      return engine;
+    }
+    const starts = (engine: CommandEngine, track: string) => clipsOf(engine, track).map((clip) => clip.start);
+
+    it("is still refused without ripple", () => {
+      const engine = setup();
+      expect(() => apply(engine, { type: "trim_clip", clipId: "clip_1", edge: "end", delta: 20 })).toThrow(/chồng/);
+    });
+
+    it("pushes everything after it back together, with the subtitles and not the music", () => {
+      const engine = setup();
+      apply(engine, { type: "trim_clip", clipId: "clip_1", edge: "end", delta: 20, ripple: true, alsoTrackIds: ["subs"] });
+      expect(clipsOf(engine)[0]!.duration).toBe(120);
+      expect(starts(engine, "video_1")).toEqual([0, 120, 190]);
+      expect(starts(engine, "subs")).toEqual([90, 140]);
+      expect(starts(engine, "music")).toEqual([120]);
+      engine.undo("user", engine.project.revision);
+      expect(starts(engine, "video_1")).toEqual([0, 100, 170]);
+    });
+
+    it("uses empty space before pushing", () => {
+      const engine = setup();
+      apply(engine, { type: "trim_clip", clipId: "clip_2", edge: "end", delta: 15, ripple: true });
+      expect(starts(engine, "video_1")).toEqual([0, 100, 170]);
+      apply(engine, { type: "trim_clip", clipId: "clip_2", edge: "end", delta: 25, ripple: true });
+      expect(starts(engine, "video_1")).toEqual([0, 100, 190]);
+    });
+
+    it("keeps a start edge against the clip before and grows towards the later clips", () => {
+      const engine = setup();
+      apply(engine, { type: "trim_clip", clipId: "clip_2", edge: "start", delta: -40, ripple: true });
+      const clip = clipsOf(engine)[1] as MediaClip;
+      expect([clip.start, clip.sourceIn, clip.duration]).toEqual([100, 160, 90]);
+      expect(starts(engine, "video_1")).toEqual([0, 100, 190]);
+    });
+
+    it("still stops at the end of the source, changing nothing", () => {
+      const engine = setup();
+      expect(() => apply(engine, { type: "trim_clip", clipId: "clip_1", edge: "end", delta: 200, ripple: true })).toThrow(/chỉ có 300 frame/);
+      expect(starts(engine, "video_1")).toEqual([0, 100, 170]);
+    });
+
+    it("can be reverted on its own", () => {
+      const engine = setup();
+      const { revision } = apply(engine, { type: "trim_clip", clipId: "clip_1", edge: "end", delta: 20, ripple: true, alsoTrackIds: ["subs"] });
+      engine.revert("user", engine.project.revision, revision);
+      expect(starts(engine, "video_1")).toEqual([0, 100, 170]);
+      expect(starts(engine, "subs")).toEqual([90, 120]);
+    });
+  });
+
   it("validates keyframes and sorts them", () => {
     const engine = engineWith(asset("a"));
     apply(engine, { type: "add_clip", trackId: "video_1", assetId: "a", start: 0, duration: 30 });
